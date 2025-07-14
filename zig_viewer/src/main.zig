@@ -3,6 +3,7 @@ const rl = @cImport(@cInclude("raylib.h"));
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const embedded_font = @import("embedded_font.zig");
+const image_loader = @import("image_loader.zig");
 const json = std.json;
 const posix = std.posix;
 
@@ -11,7 +12,7 @@ const allocator = gpa.allocator();
 
 const PageSize = struct { width: i32, height: i32 };
 
-const CBZFile = struct {
+pub const CBZFile = struct {
     file: std.fs.File,
     images: ArrayList([]const u8),
     page_sizes: ArrayList(PageSize),
@@ -49,6 +50,7 @@ var folder_path: ?[]const u8 = null;
 var ui_font: rl.Font = undefined;
 var force_render_frames: u32 = 0; // Force rendering for initial frames after state restoration
 var show_help: bool = false; // Show keyboard shortcuts help
+var bg_image_loader: image_loader.ImageLoader = undefined;
 
 fn signalHandler(sig: i32) callconv(.C) void {
     std.debug.print("Received signal {d}, saving state...\n", .{sig});
@@ -257,6 +259,11 @@ pub fn main() !void {
     try loadPath(path);
     updateCumulative();
 
+    // Initialize background image loader
+    bg_image_loader = image_loader.ImageLoader.init(allocator, @ptrCast(&cbz_files), extractImageForBackground);
+    try bg_image_loader.start();
+    defer bg_image_loader.deinit();
+
     // Load saved state after everything is initialized
     loadState();
 
@@ -281,6 +288,9 @@ pub fn main() !void {
                 force_render_frames -= 1;
             }
         }
+
+        // Process background loading results
+        processBackgroundResults();
 
         rl.BeginDrawing();
         rl.ClearBackground(rl.BLACK);
@@ -725,6 +735,50 @@ fn updateCamera() void {
     camera.zoom = 1.0;
 }
 
+fn processBackgroundResults() void {
+    // Process completed background loading results
+    while (bg_image_loader.getResult()) |result| {
+        defer {
+            var mut_result = result;
+            mut_result.deinit(allocator);
+        }
+
+        if (!result.success) {
+            std.debug.print("Background loading failed for page {}\n", .{result.page_idx});
+            continue;
+        }
+
+        if (result.page_idx >= pages.items.len) {
+            std.debug.print("Invalid page index from background loader: {}\n", .{result.page_idx});
+            continue;
+        }
+
+        const page = &pages.items[result.page_idx];
+        if (page.loaded) {
+            // Page already loaded synchronously, skip
+            continue;
+        }
+
+        // Create texture from pre-decoded pixel data
+        const img = rl.Image{
+            .data = @ptrCast(result.pixel_data.ptr),
+            .width = result.width,
+            .height = result.height,
+            .mipmaps = 1,
+            .format = result.format,
+        };
+
+        page.texture = rl.LoadTextureFromImage(img);
+        page.loaded = true;
+
+        // Update page size with actual dimensions
+        const cbz = &cbz_files.items[page.file_idx];
+        cbz.page_sizes.items[page.local_idx] = .{ .width = result.width, .height = result.height };
+
+        std.debug.print("Background loaded page {} ({}x{})\n", .{ result.page_idx, result.width, result.height });
+    }
+}
+
 fn updateLazyLoading() void {
     if (total_pages == 0) return;
 
@@ -766,14 +820,38 @@ fn updateLazyLoading() void {
     // Debug output - show when lazy loading actually happens (commented out for performance)
     // std.debug.print("LAZY LOAD: Visible pages {}-{}, Loading range {}-{}, Currently loaded: {}\n", .{ start_page, end_page, load_start, load_end, loaded_count });
 
-    // Load pages in range (limit to 2 per frame to avoid blocking, unless forced)
-    var textures_loaded_this_frame: usize = 0;
-    const max_loads_per_frame: usize = if (force_render_frames > 0) 10 else 2; // Load more when forced
+    // Request background loading for pages in range and beyond
+    // Load more aggressively in background since it doesn't block the main thread
+    const bg_load_start = if (load_start >= 10) load_start - 10 else 0;
+    const bg_load_end = @min(total_pages - 1, load_end + 20);
 
-    for (load_start..load_end + 1) |i| {
+    for (bg_load_start..bg_load_end + 1) |i| {
         if (i < pages.items.len and !pages.items[i].loaded) {
-            if (textures_loaded_this_frame >= max_loads_per_frame) {
-                break; // Don't load more than max textures per frame
+            const page = &pages.items[i];
+            const cbz = &cbz_files.items[page.file_idx];
+            const image_name = cbz.images.items[page.local_idx];
+
+            // Calculate priority: higher for visible pages, lower for buffer pages
+            const distance_from_visible = if (i < start_page) start_page - i else if (i > end_page) i - end_page else 0;
+            const priority = 1000 - @as(i32, @intCast(distance_from_visible));
+
+            bg_image_loader.requestLoad(i, page.file_idx, page.local_idx, image_name, priority) catch |err| {
+                std.debug.print("Error requesting background load for page {}: {}\n", .{ i, err });
+            };
+        }
+    }
+
+    // Cancel background requests for pages far outside the current range
+    bg_image_loader.cancelOutsideRange(bg_load_start, bg_load_end);
+
+    // Synchronous fallback for immediately visible pages if background loading is slow
+    var textures_loaded_this_frame: usize = 0;
+    const max_sync_loads_per_frame: usize = if (force_render_frames > 0) 5 else 1; // Reduced since background loading handles most
+
+    for (start_page..end_page + 1) |i| {
+        if (i < pages.items.len and !pages.items[i].loaded) {
+            if (textures_loaded_this_frame >= max_sync_loads_per_frame) {
+                break; // Don't load more than max textures per frame synchronously
             }
             loadPageTexture(i) catch |err| {
                 std.debug.print("Error loading page {}: {}\n", .{ i, err });
@@ -823,6 +901,19 @@ fn loadPageTexture(page_idx: usize) !void {
     // Create texture from image
     page.texture = rl.LoadTextureFromImage(img);
     page.loaded = true;
+}
+
+fn extractImageForBackground(cbz_files_ptr: *anyopaque, alloc: Allocator, image_name: []const u8, file_idx: usize, local_idx: usize) ![]u8 {
+    _ = local_idx; // unused for now
+    _ = alloc; // unused in this function
+    const cbz_list = @as(*ArrayList(CBZFile), @ptrCast(@alignCast(cbz_files_ptr)));
+
+    if (file_idx >= cbz_list.items.len) {
+        return error.InvalidFileIndex;
+    }
+
+    const cbz = &cbz_list.items[file_idx];
+    return extractImageFromCBZ(cbz, image_name);
 }
 
 fn extractImageFromCBZ(cbz: *const CBZFile, image_name: []const u8) ![]u8 {
