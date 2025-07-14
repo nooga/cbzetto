@@ -59,9 +59,92 @@ var debug_mode: bool = false; // Enable debug output when -d flag is used
 var loaded_texture_count: u32 = 0; // Track number of loaded textures
 const max_loaded_textures: u32 = 50; // Limit to prevent GPU memory issues
 
+// Dynamic FPS system for power efficiency
+var activity_detected: bool = false;
+var last_activity_time: f64 = 0.0;
+var current_fps: i32 = 60;
+const active_fps: i32 = 60;
+const idle_fps: i32 = 10;
+const activity_timeout: f64 = 2.0; // Seconds of inactivity before dropping FPS (increased)
+var needs_redraw: bool = true; // Track if we need to redraw the screen
+var last_fps_change: f64 = 0.0; // Prevent rapid FPS switching
+
 fn debugPrint(comptime fmt: []const u8, args: anytype) void {
     if (debug_mode) {
         std.debug.print(fmt, args);
+    }
+}
+
+// Mark that user activity has been detected
+fn markActivity() void {
+    activity_detected = true;
+    last_activity_time = rl.GetTime();
+    needs_redraw = true;
+}
+
+// Update FPS based on activity state
+fn updateDynamicFPS() void {
+    const current_time = rl.GetTime();
+    const time_since_activity = current_time - last_activity_time;
+    const time_since_fps_change = current_time - last_fps_change;
+
+    // Throttle FPS changes to prevent rapid switching
+    const fps_change_cooldown = 0.5; // Half second between FPS changes
+
+    // Check if we should drop to idle FPS
+    if (activity_detected and time_since_activity > activity_timeout and time_since_fps_change > fps_change_cooldown) {
+        activity_detected = false;
+        if (current_fps != idle_fps) {
+            current_fps = idle_fps;
+            rl.SetTargetFPS(current_fps);
+            last_fps_change = current_time;
+            needs_redraw = true; // Ensure we render one final frame at idle FPS
+            debugPrint("Switching to idle FPS: {}\n", .{idle_fps});
+        }
+    }
+
+    // Check if we should raise to active FPS
+    if (activity_detected and current_fps != active_fps and time_since_fps_change > fps_change_cooldown) {
+        current_fps = active_fps;
+        rl.SetTargetFPS(current_fps);
+        last_fps_change = current_time;
+        needs_redraw = true; // Ensure we render when returning to active FPS
+        debugPrint("Switching to active FPS: {}\n", .{active_fps});
+    }
+}
+
+// Check for any input activity and mark it
+fn detectInputActivity() void {
+    // Check for mouse activity
+    if (rl.GetMouseWheelMove() != 0) {
+        markActivity();
+        return; // Exit early to avoid redundant checks
+    }
+
+    // Check for window resize
+    if (rl.IsWindowResized()) {
+        markActivity();
+        return;
+    }
+
+    // Check for gesture activity
+    if (rl.IsGestureDetected(rl.GESTURE_PINCH_IN) or rl.IsGestureDetected(rl.GESTURE_PINCH_OUT)) {
+        markActivity();
+        return;
+    }
+
+    // Check for ongoing texture loading
+    if (force_render_frames > 0) {
+        markActivity();
+        return;
+    }
+
+    // Simplified keyboard check - only major navigation keys
+    if (rl.IsKeyPressed(rl.KEY_UP) or rl.IsKeyPressed(rl.KEY_DOWN) or
+        rl.IsKeyPressed(rl.KEY_PAGE_UP) or rl.IsKeyPressed(rl.KEY_PAGE_DOWN))
+    {
+        markActivity();
+        return;
     }
 }
 
@@ -75,6 +158,11 @@ const StateData = struct {
     scroll_pos: f32, // Keep for backward compatibility
     page_number: ?usize = null, // 0-based page index
     page_progress: ?f32 = null, // 0.0 to 1.0 progress through the page
+    zoom_level: ?f32 = null, // Current zoom level
+    window_width: ?i32 = null, // Window width
+    window_height: ?i32 = null, // Window height
+    window_x: ?i32 = null, // Window X position
+    window_y: ?i32 = null, // Window Y position
 };
 
 fn saveState() void {
@@ -108,6 +196,11 @@ fn saveState() void {
         .scroll_pos = current_scroll, // Keep for backward compatibility
         .page_number = current_page,
         .page_progress = page_progress,
+        .zoom_level = zoom_level,
+        .window_width = rl.GetScreenWidth(),
+        .window_height = rl.GetScreenHeight(),
+        .window_x = @as(i32, @intFromFloat(rl.GetWindowPosition().x)),
+        .window_y = @as(i32, @intFromFloat(rl.GetWindowPosition().y)),
     };
 
     const file = std.fs.cwd().createFile(state_path, .{}) catch |err| {
@@ -122,7 +215,7 @@ fn saveState() void {
         return;
     };
 
-    debugPrint("Saved state: page {d}, progress {d:.2}\n", .{ current_page, page_progress });
+    debugPrint("Saved state: page {d}, progress {d:.2}, zoom {d:.2}, window {}x{} at ({},{})\n", .{ current_page, page_progress, zoom_level, rl.GetScreenWidth(), rl.GetScreenHeight(), @as(i32, @intFromFloat(rl.GetWindowPosition().x)), @as(i32, @intFromFloat(rl.GetWindowPosition().y)) });
 }
 
 fn loadState() void {
@@ -172,9 +265,117 @@ fn loadState() void {
         debugPrint("Restored scroll position (legacy): {d}\n", .{current_scroll});
     }
 
+    // Restore zoom level if available
+    if (parsed.value.zoom_level != null) {
+        zoom_level = parsed.value.zoom_level.?;
+        // Clamp zoom to valid range
+        const min_zoom: f32 = 0.1;
+        const max_zoom: f32 = 5.0;
+        zoom_level = std.math.clamp(zoom_level, min_zoom, max_zoom);
+        debugPrint("Restored zoom level: {d:.2}\n", .{zoom_level});
+    }
+
     // Clamp to valid range
     const max_scroll = @max(0.0, total_height - @as(f32, @floatFromInt(rl.GetScreenHeight())));
     current_scroll = std.math.clamp(current_scroll, 0.0, max_scroll);
+}
+
+fn restoreWindowProperties() void {
+    if (folder_path == null) return;
+
+    const state_path = std.fmt.allocPrint(allocator, "{s}/.cbzviewer_state.json", .{folder_path.?}) catch return;
+    defer allocator.free(state_path);
+
+    const file = std.fs.cwd().openFile(state_path, .{}) catch {
+        // File doesn't exist, that's okay
+        debugPrint("No state file found, using default window properties\n", .{});
+        return;
+    };
+    defer file.close();
+
+    const file_size = file.getEndPos() catch return;
+    const contents = allocator.alloc(u8, file_size) catch return;
+    defer allocator.free(contents);
+
+    _ = file.readAll(contents) catch return;
+
+    const parsed = json.parseFromSlice(StateData, allocator, contents, .{}) catch |err| {
+        debugPrint("Error parsing state file for window properties: {}\n", .{err});
+        return;
+    };
+    defer parsed.deinit();
+
+    debugPrint("Restoring window properties from state file\n", .{});
+    debugPrint("Current window size: {}x{}\n", .{ rl.GetScreenWidth(), rl.GetScreenHeight() });
+    debugPrint("Current window position: {}, {}\n", .{ @as(i32, @intFromFloat(rl.GetWindowPosition().x)), @as(i32, @intFromFloat(rl.GetWindowPosition().y)) });
+
+    var size_restored = false;
+    var position_restored = false;
+
+    // Restore window size if available
+    if (parsed.value.window_width != null and parsed.value.window_height != null) {
+        const width = parsed.value.window_width.?;
+        const height = parsed.value.window_height.?;
+
+        debugPrint("State file window size: {}x{}\n", .{ width, height });
+
+        // Validate window size (more permissive ranges)
+        if (width >= 300 and height >= 200 and width <= 5120 and height <= 2880) {
+            // Check if current size is different from desired size
+            if (rl.GetScreenWidth() != width or rl.GetScreenHeight() != height) {
+                debugPrint("Setting window size to: {}x{}\n", .{ width, height });
+                rl.SetWindowSize(width, height);
+                size_restored = true;
+
+                // Wait for size change to take effect
+                std.time.sleep(50 * std.time.ns_per_ms); // 50ms delay for size
+            } else {
+                debugPrint("Window size already matches saved state\n", .{});
+            }
+        } else {
+            debugPrint("Window size validation failed: {}x{} (out of range)\n", .{ width, height });
+        }
+    } else {
+        debugPrint("No window size data in state file\n", .{});
+    }
+
+    // Restore window position if available
+    if (parsed.value.window_x != null and parsed.value.window_y != null) {
+        const x = parsed.value.window_x.?;
+        const y = parsed.value.window_y.?;
+
+        debugPrint("State file window position: {}, {}\n", .{ x, y });
+
+        // Very permissive position validation for multi-monitor setups
+        // Allow wide ranges to accommodate various monitor configurations
+        if (x >= -5120 and y >= -200 and x <= 10240 and y <= 5760) {
+            const current_x = @as(i32, @intFromFloat(rl.GetWindowPosition().x));
+            const current_y = @as(i32, @intFromFloat(rl.GetWindowPosition().y));
+
+            // Check if current position is different from desired position
+            if (current_x != x or current_y != y) {
+                debugPrint("Setting window position to: {}, {}\n", .{ x, y });
+                rl.SetWindowPosition(x, y);
+                position_restored = true;
+
+                // Wait for position change to take effect
+                std.time.sleep(50 * std.time.ns_per_ms); // 50ms delay for position
+            } else {
+                debugPrint("Window position already matches saved state\n", .{});
+            }
+        } else {
+            debugPrint("Window position validation failed: {}, {} (out of range)\n", .{ x, y });
+        }
+    } else {
+        debugPrint("No window position data in state file\n", .{});
+    }
+
+    // Final verification
+    if (size_restored or position_restored) {
+        std.time.sleep(100 * std.time.ns_per_ms); // Extra delay for macOS
+        debugPrint("Final window size: {}x{}\n", .{ rl.GetScreenWidth(), rl.GetScreenHeight() });
+        debugPrint("Final window position: {}, {}\n", .{ @as(i32, @intFromFloat(rl.GetWindowPosition().x)), @as(i32, @intFromFloat(rl.GetWindowPosition().y)) });
+    }
 }
 
 pub fn main() !void {
@@ -264,7 +465,10 @@ pub fn main() !void {
     // Initialize window
     rl.InitWindow(800, 600, "CBZT");
     defer rl.CloseWindow();
-    rl.SetTargetFPS(60);
+    rl.SetTargetFPS(active_fps); // Start with active FPS
+
+    // Load the file path early
+    try loadPath(path);
 
     // Initialize macOS-specific features (icon, menu bar, etc.)
     macos_wrapper.initializeMacOSFeatures();
@@ -308,7 +512,6 @@ pub fn main() !void {
     }
     defer if (ui_font.texture.id != rl.GetFontDefault().texture.id) rl.UnloadFont(ui_font);
 
-    try loadPath(path);
     updateCumulative();
 
     // Initialize background image loader
@@ -331,6 +534,12 @@ pub fn main() !void {
     // Force initial lazy loading to prevent black screen at restored position
     updateLazyLoading();
 
+    // Initialize activity tracking
+    markActivity(); // Start with activity so we begin at high FPS
+
+    // Restore window properties (size and position) after all initialization is complete
+    restoreWindowProperties();
+
     while (!rl.WindowShouldClose()) {
         // Handle escape key explicitly to prevent window closing
         if (rl.IsKeyPressed(rl.KEY_ESCAPE)) {
@@ -341,8 +550,14 @@ pub fn main() !void {
             continue;
         }
 
+        // Detect input activity before processing input
+        detectInputActivity();
+
         handleInput();
         updateCamera();
+
+        // Update dynamic FPS based on activity
+        updateDynamicFPS();
 
         // Only update lazy loading when scroll position changes significantly, or when forced
         if (@abs(current_scroll - last_scroll) > 5.0 or last_scroll == -1.0 or force_render_frames > 0) {
@@ -356,9 +571,13 @@ pub fn main() !void {
         // Process background loading results
         bg_process_counter += 1;
         if (bg_process_counter % 3 == 0) { // Only process every 3rd frame
-            processBackgroundResults();
+            const had_results = processBackgroundResults();
+            if (had_results) {
+                markActivity(); // Mark activity when new textures are loaded
+            }
         }
 
+        // Always render for now - conditional rendering was causing issues
         rl.BeginDrawing();
         rl.ClearBackground(rl.BLACK);
         rl.BeginMode2D(camera);
@@ -854,9 +1073,11 @@ fn updateCamera() void {
     camera.zoom = zoom_level;
 }
 
-fn processBackgroundResults() void {
+fn processBackgroundResults() bool {
     // Process completed background loading results
+    var had_results = false;
     while (bg_image_loader.getResult()) |result| {
+        had_results = true;
         defer {
             var mut_result = result;
             mut_result.deinit(allocator);
@@ -931,6 +1152,8 @@ fn processBackgroundResults() void {
 
         debugPrint("Background loaded page {} ({}x{})\n", .{ result.page_idx, result.width, result.height });
     }
+
+    return had_results;
 }
 
 fn updateLazyLoading() void {
