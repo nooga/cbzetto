@@ -362,8 +362,37 @@ fn processLoadRequest(loader: *ImageLoader, request: *const LoadRequest) LoadRes
         };
     }
 
+    // Check for large textures and downsample if needed
+    const max_texture_size: i32 = 2048;
+    var final_img = img;
+    var needs_resize = false;
+
+    if (img.width > max_texture_size or img.height > max_texture_size) {
+        debugPrint(loader.debug_mode, "Background downsampling large texture for page {} from ({}x{}) ", .{ request.page_idx, img.width, img.height });
+
+        // Calculate new dimensions maintaining aspect ratio
+        const aspect_ratio = @as(f32, @floatFromInt(img.width)) / @as(f32, @floatFromInt(img.height));
+        var new_width: i32 = max_texture_size;
+        var new_height: i32 = max_texture_size;
+
+        if (aspect_ratio > 1.0) {
+            // Width is larger, scale height down
+            new_height = @intFromFloat(@as(f32, @floatFromInt(max_texture_size)) / aspect_ratio);
+        } else {
+            // Height is larger, scale width down
+            new_width = @intFromFloat(@as(f32, @floatFromInt(max_texture_size)) * aspect_ratio);
+        }
+
+        // Create a copy of the image to resize (since original has defer rl.UnloadImage)
+        final_img = rl.ImageCopy(img);
+        rl.ImageResize(&final_img, new_width, new_height);
+        needs_resize = true;
+
+        debugPrint(loader.debug_mode, "to ({}x{})\n", .{ new_width, new_height });
+    }
+
     // Calculate pixel data size
-    const pixel_size: usize = switch (img.format) {
+    const pixel_size: usize = switch (final_img.format) {
         1 => 1, // PIXELFORMAT_UNCOMPRESSED_GRAYSCALE
         2 => 2, // PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA
         3 => 3, // PIXELFORMAT_UNCOMPRESSED_R8G8B8
@@ -371,11 +400,14 @@ fn processLoadRequest(loader: *ImageLoader, request: *const LoadRequest) LoadRes
         else => 4, // Default to RGBA
     };
 
-    const data_size = @as(usize, @intCast(img.width * img.height)) * pixel_size;
+    const data_size = @as(usize, @intCast(final_img.width * final_img.height)) * pixel_size;
 
     // Copy pixel data
     const pixel_data = loader.allocator.alloc(u8, data_size) catch |err| {
         debugPrint(loader.debug_mode, "Error allocating pixel data: {}\n", .{err});
+        if (needs_resize) {
+            rl.UnloadImage(final_img);
+        }
         return LoadResult{
             .page_idx = request.page_idx,
             .width = 0,
@@ -386,13 +418,18 @@ fn processLoadRequest(loader: *ImageLoader, request: *const LoadRequest) LoadRes
         };
     };
 
-    @memcpy(pixel_data, @as([*]u8, @ptrCast(img.data))[0..data_size]);
+    @memcpy(pixel_data, @as([*]u8, @ptrCast(final_img.data))[0..data_size]);
+
+    // Clean up resized image if needed
+    if (needs_resize) {
+        rl.UnloadImage(final_img);
+    }
 
     return LoadResult{
         .page_idx = request.page_idx,
-        .width = img.width,
-        .height = img.height,
-        .format = img.format,
+        .width = final_img.width,
+        .height = final_img.height,
+        .format = final_img.format,
         .pixel_data = pixel_data,
         .success = true,
     };

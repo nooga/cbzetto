@@ -34,6 +34,7 @@ const PageInfo = struct {
     local_idx: usize,
     texture: rl.Texture2D,
     loaded: bool,
+    loading_in_progress: bool,
     height: f32,
 };
 
@@ -46,6 +47,7 @@ var total_pages: usize = 0;
 var camera: rl.Camera2D = undefined;
 var current_scroll: f32 = 0.0;
 var last_scroll: f32 = -1.0; // Track last scroll position to avoid unnecessary updates
+var zoom_level: f32 = 1.0; // Current zoom level
 var folder_path: ?[]const u8 = null;
 var ui_font: rl.Font = undefined;
 var force_render_frames: u32 = 0; // Force rendering for initial frames after state restoration
@@ -53,6 +55,8 @@ var show_help: bool = false; // Show keyboard shortcuts help
 var bg_image_loader: image_loader.ImageLoader = undefined;
 var bg_process_counter: u32 = 0; // Throttling counter for background processing
 var debug_mode: bool = false; // Enable debug output when -d flag is used
+var loaded_texture_count: u32 = 0; // Track number of loaded textures
+const max_loaded_textures: u32 = 50; // Limit to prevent GPU memory issues
 
 fn debugPrint(comptime fmt: []const u8, args: anytype) void {
     if (debug_mode) {
@@ -225,14 +229,14 @@ pub fn main() !void {
             std.debug.print("Debug mode enabled\n", .{});
         } else if (std.mem.startsWith(u8, arg, "-")) {
             std.debug.print("Unknown option: {s}\n", .{arg});
-            std.debug.print("Usage: cbz_viewer [-d|--debug] <path_to_cbz_or_folder>\n", .{});
+            std.debug.print("Usage: cbzt [-d|--debug] <path_to_cbz_or_folder>\n", .{});
             return;
         } else {
             if (file_path == null) {
                 file_path = arg;
             } else {
                 std.debug.print("Too many arguments\n", .{});
-                std.debug.print("Usage: cbz_viewer [-d|--debug] <path_to_cbz_or_folder>\n", .{});
+                std.debug.print("Usage: cbzt [-d|--debug] <path_to_cbz_or_folder>\n", .{});
                 return;
             }
         }
@@ -245,8 +249,11 @@ pub fn main() !void {
         rl.SetTraceLogLevel(rl.LOG_ERROR); // Only show errors in normal mode
     }
 
+    // Disable escape key from closing window (in case gesture detection enabled it)
+    rl.SetExitKey(rl.KEY_NULL); // Use KEY_NULL instead of 0
+
     const path = file_path orelse {
-        std.debug.print("Usage: cbz_viewer [-d|--debug] <path_to_cbz_or_folder>\n", .{});
+        std.debug.print("Usage: cbzt [-d|--debug] <path_to_cbz_or_folder>\n", .{});
         return;
     };
 
@@ -254,9 +261,12 @@ pub fn main() !void {
     rl.SetConfigFlags(rl.FLAG_WINDOW_RESIZABLE);
 
     // Initialize window
-    rl.InitWindow(800, 600, "CBZ Viewer - Zig + Raylib");
+    rl.InitWindow(800, 600, "CBZT");
     defer rl.CloseWindow();
     rl.SetTargetFPS(60);
+
+    // Enable gesture detection for pinch-to-zoom
+    rl.SetGesturesEnabled(rl.GESTURE_PINCH_IN | rl.GESTURE_PINCH_OUT);
 
     // Register signal handlers for graceful shutdown
     const sigaction = posix.Sigaction{
@@ -318,6 +328,15 @@ pub fn main() !void {
     updateLazyLoading();
 
     while (!rl.WindowShouldClose()) {
+        // Handle escape key explicitly to prevent window closing
+        if (rl.IsKeyPressed(rl.KEY_ESCAPE)) {
+            if (show_help) {
+                show_help = false;
+            }
+            // Don't let escape close the window - consume the key press
+            continue;
+        }
+
         handleInput();
         updateCamera();
 
@@ -416,6 +435,7 @@ fn loadFolder(path: []const u8) !void {
                 .local_idx = local_idx,
                 .texture = rl.Texture2D{ .id = 0, .width = 0, .height = 0, .mipmaps = 0, .format = 0 },
                 .loaded = false,
+                .loading_in_progress = false,
                 .height = 0,
             };
             try pages.append(page_info);
@@ -441,6 +461,7 @@ fn loadSingleCBZ(file_path: []const u8) !void {
             .local_idx = local_idx,
             .texture = rl.Texture2D{ .id = 0, .width = 0, .height = 0, .mipmaps = 0, .format = 0 },
             .loaded = false,
+            .loading_in_progress = false,
             .height = 0,
         };
         try pages.append(page_info);
@@ -661,13 +682,27 @@ fn jumpToNextFile() void {
 
 fn handleInput() void {
     const wheel = rl.GetMouseWheelMove();
-    current_scroll -= wheel * 100.0;
 
     // Keyboard controls
     const screen_height = @as(f32, @floatFromInt(rl.GetScreenHeight()));
     const shift_pressed = rl.IsKeyDown(rl.KEY_LEFT_SHIFT) or rl.IsKeyDown(rl.KEY_RIGHT_SHIFT);
     const cmd_pressed = rl.IsKeyDown(rl.KEY_LEFT_SUPER) or rl.IsKeyDown(rl.KEY_RIGHT_SUPER);
     const ctrl_pressed = rl.IsKeyDown(rl.KEY_LEFT_CONTROL) or rl.IsKeyDown(rl.KEY_RIGHT_CONTROL);
+
+    // Handle mouse wheel - zoom if modifier key is pressed, otherwise scroll
+    if (wheel != 0) {
+        if (ctrl_pressed or cmd_pressed) {
+            // Ctrl/Cmd + mouse wheel for zoom (more reliable on macOS)
+            const zoom_speed: f32 = 0.1;
+            const min_zoom: f32 = 0.1;
+            const max_zoom: f32 = 5.0;
+            const zoom_delta = wheel * zoom_speed;
+            zoom_level = std.math.clamp(zoom_level + zoom_delta, min_zoom, max_zoom);
+        } else {
+            // Regular scrolling
+            current_scroll -= wheel * 100.0;
+        }
+    }
 
     // Arrow key navigation
     if (rl.IsKeyPressed(rl.KEY_UP)) {
@@ -722,12 +757,37 @@ fn handleInput() void {
         show_help = !show_help;
     }
 
-    // Escape to close help
-    if (rl.IsKeyPressed(rl.KEY_ESCAPE)) {
-        show_help = false;
+    // Zoom controls
+    const zoom_speed: f32 = 0.1;
+    const min_zoom: f32 = 0.1;
+    const max_zoom: f32 = 5.0;
+
+    // Keyboard zoom controls
+    if (rl.IsKeyPressed(rl.KEY_EQUAL) or rl.IsKeyPressed(rl.KEY_KP_ADD)) {
+        // + key: Zoom in
+        zoom_level = std.math.clamp(zoom_level + zoom_speed, min_zoom, max_zoom);
     }
 
-    const max_scroll = @max(0.0, total_height - screen_height);
+    if (rl.IsKeyPressed(rl.KEY_MINUS) or rl.IsKeyPressed(rl.KEY_KP_SUBTRACT)) {
+        // - key: Zoom out
+        zoom_level = std.math.clamp(zoom_level - zoom_speed, min_zoom, max_zoom);
+    }
+
+    if (rl.IsKeyPressed(rl.KEY_ZERO) or rl.IsKeyPressed(rl.KEY_KP_0)) {
+        // 0 key: Reset zoom
+        zoom_level = 1.0;
+    }
+
+    // Pinch gesture zoom (macOS trackpad) - experimental
+    if (rl.IsGestureDetected(rl.GESTURE_PINCH_IN)) {
+        zoom_level = std.math.clamp(zoom_level - 0.05, min_zoom, max_zoom);
+    }
+
+    if (rl.IsGestureDetected(rl.GESTURE_PINCH_OUT)) {
+        zoom_level = std.math.clamp(zoom_level + 0.05, min_zoom, max_zoom);
+    }
+
+    const max_scroll = @max(0.0, (total_height * zoom_level) - screen_height);
     current_scroll = std.math.clamp(current_scroll, 0.0, max_scroll);
 
     if (rl.IsWindowResized()) {
@@ -774,9 +834,20 @@ fn handleInput() void {
 
 fn updateCamera() void {
     camera.target.y = current_scroll;
+
+    // Center content horizontally when zoomed out
+    const screen_width = @as(f32, @floatFromInt(rl.GetScreenWidth()));
+    if (zoom_level < 1.0) {
+        // When zoomed out, center the content
+        camera.target.x = -(screen_width * (1.0 - zoom_level)) / (2.0 * zoom_level);
+    } else {
+        // When zoomed in or at 100%, keep content left-aligned
+        camera.target.x = 0;
+    }
+
     camera.offset.x = 0;
     camera.offset.y = 0;
-    camera.zoom = 1.0;
+    camera.zoom = zoom_level;
 }
 
 fn processBackgroundResults() void {
@@ -789,6 +860,10 @@ fn processBackgroundResults() void {
 
         if (!result.success) {
             debugPrint("Background loading failed for page {}\n", .{result.page_idx});
+            // Clear loading flag for failed loads
+            if (result.page_idx < pages.items.len) {
+                pages.items[result.page_idx].loading_in_progress = false;
+            }
             continue;
         }
 
@@ -798,14 +873,33 @@ fn processBackgroundResults() void {
         }
 
         const page = &pages.items[result.page_idx];
+
+        // Always clear the loading_in_progress flag when processing results
+        page.loading_in_progress = false;
+
         if (page.loaded) {
             // Page already loaded synchronously, skip
             continue;
         }
 
         // Create texture from pre-decoded pixel data
+        // We need to copy the pixel data because the result will be freed
+        const pixel_data_size = result.pixel_data.len;
+
+        // Check if we've hit the texture limit
+        if (loaded_texture_count >= max_loaded_textures) {
+            debugPrint("Skipping texture creation for page {} - too many textures loaded ({})\n", .{ result.page_idx, loaded_texture_count });
+            continue;
+        }
+
+        const pixel_data_copy = allocator.alloc(u8, pixel_data_size) catch {
+            debugPrint("Failed to allocate memory for pixel data copy\n", .{});
+            continue;
+        };
+        @memcpy(pixel_data_copy, result.pixel_data);
+
         const img = rl.Image{
-            .data = @ptrCast(result.pixel_data.ptr),
+            .data = @ptrCast(pixel_data_copy.ptr),
             .width = result.width,
             .height = result.height,
             .mipmaps = 1,
@@ -813,7 +907,19 @@ fn processBackgroundResults() void {
         };
 
         page.texture = rl.LoadTextureFromImage(img);
+
+        // Check if texture creation failed
+        if (page.texture.id == 0) {
+            debugPrint("Failed to create texture for page {}\n", .{result.page_idx});
+            allocator.free(pixel_data_copy);
+            continue;
+        }
+
         page.loaded = true;
+        loaded_texture_count += 1;
+
+        // Free the copied pixel data after texture creation
+        allocator.free(pixel_data_copy);
 
         // Update page size with actual dimensions
         const cbz = &cbz_files.items[page.file_idx];
@@ -833,6 +939,7 @@ fn updateLazyLoading() void {
     // Find the first page that's partially visible
     var start_page: usize = 0;
     for (cumulative_heights.items, 0..) |cum_height, i| {
+        if (i >= cumulative_heights.items.len) break; // Bounds check
         if (cum_height >= visible_start) {
             start_page = i;
             break;
@@ -842,6 +949,7 @@ fn updateLazyLoading() void {
     // Find the last page that's partially visible
     var end_page: usize = start_page;
     for (start_page..cumulative_heights.items.len) |i| {
+        if (i >= cumulative_heights.items.len) break; // Bounds check
         const page_top = if (i == 0) 0.0 else cumulative_heights.items[i - 1];
         if (page_top <= visible_end) {
             end_page = i;
@@ -870,10 +978,13 @@ fn updateLazyLoading() void {
     const bg_load_end = @min(total_pages - 1, load_end + 3);
 
     for (bg_load_start..bg_load_end + 1) |i| {
-        if (i < pages.items.len and !pages.items[i].loaded) {
+        if (i < pages.items.len and !pages.items[i].loaded and !pages.items[i].loading_in_progress) {
             const page = &pages.items[i];
             const cbz = &cbz_files.items[page.file_idx];
             const image_name = cbz.images.items[page.local_idx];
+
+            // Mark as loading in progress to prevent duplicate requests
+            page.loading_in_progress = true;
 
             // Calculate priority: higher for visible pages, lower for buffer pages
             const distance_from_visible = if (i < start_page) start_page - i else if (i > end_page) i - end_page else 0;
@@ -881,6 +992,8 @@ fn updateLazyLoading() void {
 
             bg_image_loader.requestLoad(i, page.file_idx, page.local_idx, image_name, priority) catch |err| {
                 debugPrint("Error requesting background load for page {}: {}\n", .{ i, err });
+                // If request failed, clear the loading flag
+                page.loading_in_progress = false;
             };
         }
     }
@@ -909,7 +1022,11 @@ fn updateLazyLoading() void {
         if (page.loaded and (i < load_start or i > load_end)) {
             rl.UnloadTexture(page.texture);
             page.loaded = false;
+            page.loading_in_progress = false; // Clear any background loading state
             page.texture = rl.Texture2D{ .id = 0, .width = 0, .height = 0, .mipmaps = 0, .format = 0 };
+            if (loaded_texture_count > 0) {
+                loaded_texture_count -= 1;
+            }
         }
     }
 }
@@ -939,12 +1056,64 @@ fn loadPageTexture(page_idx: usize) !void {
         return;
     }
 
-    // Update page size with actual image dimensions
+    // Check for large textures and downsample if needed
+    const max_texture_size: i32 = 2048;
+    var final_img = img;
+    var needs_resize = false;
+
+    if (img.width > max_texture_size or img.height > max_texture_size) {
+        debugPrint("Downsampling large texture for page {} from ({}x{}) ", .{ page_idx, img.width, img.height });
+
+        // Calculate new dimensions maintaining aspect ratio
+        const aspect_ratio = @as(f32, @floatFromInt(img.width)) / @as(f32, @floatFromInt(img.height));
+        var new_width: i32 = max_texture_size;
+        var new_height: i32 = max_texture_size;
+
+        if (aspect_ratio > 1.0) {
+            // Width is larger, scale height down
+            new_height = @intFromFloat(@as(f32, @floatFromInt(max_texture_size)) / aspect_ratio);
+        } else {
+            // Height is larger, scale width down
+            new_width = @intFromFloat(@as(f32, @floatFromInt(max_texture_size)) * aspect_ratio);
+        }
+
+        // Create a copy of the image to resize (since original has defer rl.UnloadImage)
+        final_img = rl.ImageCopy(img);
+        rl.ImageResize(&final_img, new_width, new_height);
+        needs_resize = true;
+
+        debugPrint("to ({}x{})\n", .{ new_width, new_height });
+    }
+
+    // Check if we've hit the texture limit
+    if (loaded_texture_count >= max_loaded_textures) {
+        debugPrint("Skipping texture creation for page {} - too many textures loaded ({})\n", .{ page_idx, loaded_texture_count });
+        if (needs_resize) {
+            rl.UnloadImage(final_img);
+        }
+        return;
+    }
+
+    // Update page size with actual image dimensions (use original dimensions for layout)
     cbz.page_sizes.items[page.local_idx] = .{ .width = img.width, .height = img.height };
 
     // Create texture from image
-    page.texture = rl.LoadTextureFromImage(img);
+    page.texture = rl.LoadTextureFromImage(final_img);
+
+    // If we resized, unload the resized image
+    if (needs_resize) {
+        rl.UnloadImage(final_img);
+    }
+
+    // Check if texture creation failed
+    if (page.texture.id == 0) {
+        debugPrint("Failed to create texture for page {}\n", .{page_idx});
+        return;
+    }
+
     page.loaded = true;
+    page.loading_in_progress = false; // Clear any pending background loading
+    loaded_texture_count += 1;
 }
 
 fn extractImageForBackground(cbz_files_ptr: *anyopaque, alloc: Allocator, image_name: []const u8, file_idx: usize, local_idx: usize) ![]u8 {
@@ -1020,7 +1189,10 @@ fn extractImageFromCBZ(cbz: *const CBZFile, image_name: []const u8) ![]u8 {
 fn renderPages() void {
     var y: f32 = 0.0;
 
-    for (pages.items) |*page| {
+    for (pages.items, 0..) |*page, i| {
+        // Bounds check to prevent segfaults
+        if (i >= pages.items.len) break;
+
         if (page.loaded and page.texture.id != 0) {
             const width = @as(f32, @floatFromInt(rl.GetScreenWidth()));
             rl.DrawTexturePro(
@@ -1069,7 +1241,7 @@ fn drawIndicator() void {
 
     // Update window title with current file name
     var title_buf: [512]u8 = undefined;
-    const title = std.fmt.bufPrintZ(title_buf[0..], "CBZ Viewer - {s}", .{current_file}) catch "CBZ Viewer";
+    const title = std.fmt.bufPrintZ(title_buf[0..], "CBZT - {s}", .{current_file}) catch "CBZT";
     rl.SetWindowTitle(title.ptr);
 
     // Create text buffer with null terminator (without filename, now in title)
@@ -1106,7 +1278,7 @@ fn drawHelp() void {
     // Draw semi-transparent background
     rl.DrawRectangle(0, 0, screen_width, screen_height, rl.Color{ .r = 0, .g = 0, .b = 0, .a = 200 });
 
-    const help_lines = [_][]const u8{ "CBZ Viewer - Keyboard Controls", "", "Navigation:", "  ↑/↓ Arrow Keys    - Jump up/down one screen", "  Shift + ↑/↓       - Jump to previous/next page", "  Ctrl/Cmd+Shift+↑/↓ - Jump to previous/next file", "  Page Up/Down      - Jump up/down one screen", "  Home              - Jump to beginning", "  End               - Jump to end", "", "Other:", "  H or F1           - Show/hide this help", "  Escape            - Close help", "  Mouse Wheel       - Scroll up/down", "", "Press H or F1 to close this help" };
+    const help_lines = [_][]const u8{ "CBZT - Keyboard Controls", "", "Navigation:", "  ↑/↓ Arrow Keys    - Jump up/down one screen", "  Shift + ↑/↓       - Jump to previous/next page", "  Ctrl/Cmd+Shift+↑/↓ - Jump to previous/next file", "  Page Up/Down      - Jump up/down one screen", "  Home              - Jump to beginning", "  End               - Jump to end", "", "Zoom:", "  + or =            - Zoom in", "  - or _            - Zoom out", "  0                 - Reset zoom to 100%", "  Ctrl/Cmd + Wheel  - Zoom in/out", "  Pinch gestures    - Zoom in/out (macOS)", "", "Other:", "  H or F1           - Show/hide this help", "  Escape            - Close help", "  Mouse Wheel       - Scroll up/down", "", "Press H or F1 to close this help" };
 
     const font_size = embedded_font.getScaledFontSize(16);
     const line_height = @as(i32, @intFromFloat(font_size * 1.25));
@@ -1126,7 +1298,7 @@ fn drawHelp() void {
 
     // Draw help text line by line
     for (help_lines, 0..) |line, i| {
-        const text_color = if (std.mem.startsWith(u8, line, "CBZ Viewer")) rl.Color{ .r = 255, .g = 255, .b = 100, .a = 255 } else rl.WHITE;
+        const text_color = if (std.mem.startsWith(u8, line, "CBZT")) rl.Color{ .r = 255, .g = 255, .b = 100, .a = 255 } else rl.WHITE;
 
         // Create null-terminated string for raylib
         var line_buf: [256]u8 = undefined;
