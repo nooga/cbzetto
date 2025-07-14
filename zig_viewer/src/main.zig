@@ -51,9 +51,17 @@ var ui_font: rl.Font = undefined;
 var force_render_frames: u32 = 0; // Force rendering for initial frames after state restoration
 var show_help: bool = false; // Show keyboard shortcuts help
 var bg_image_loader: image_loader.ImageLoader = undefined;
+var bg_process_counter: u32 = 0; // Throttling counter for background processing
+var debug_mode: bool = false; // Enable debug output when -d flag is used
+
+fn debugPrint(comptime fmt: []const u8, args: anytype) void {
+    if (debug_mode) {
+        std.debug.print(fmt, args);
+    }
+}
 
 fn signalHandler(sig: i32) callconv(.C) void {
-    std.debug.print("Received signal {d}, saving state...\n", .{sig});
+    debugPrint("Received signal {d}, saving state...\n", .{sig});
     saveState();
     std.process.exit(0);
 }
@@ -98,18 +106,18 @@ fn saveState() void {
     };
 
     const file = std.fs.cwd().createFile(state_path, .{}) catch |err| {
-        std.debug.print("Error creating state file: {}\n", .{err});
+        debugPrint("Error creating state file: {}\n", .{err});
         return;
     };
     defer file.close();
 
     const writer = file.writer();
     json.stringify(state, .{}, writer) catch |err| {
-        std.debug.print("Error writing state: {}\n", .{err});
+        debugPrint("Error writing state: {}\n", .{err});
         return;
     };
 
-    std.debug.print("Saved state: page {d}, progress {d:.2}\n", .{ current_page, page_progress });
+    debugPrint("Saved state: page {d}, progress {d:.2}\n", .{ current_page, page_progress });
 }
 
 fn loadState() void {
@@ -131,7 +139,7 @@ fn loadState() void {
     _ = file.readAll(contents) catch return;
 
     const parsed = json.parseFromSlice(StateData, allocator, contents, .{}) catch |err| {
-        std.debug.print("Error parsing state file: {}\n", .{err});
+        debugPrint("Error parsing state file: {}\n", .{err});
         return;
     };
     defer parsed.deinit();
@@ -148,15 +156,15 @@ fn loadState() void {
             const page_height = page_end - page_start;
 
             current_scroll = page_start + (progress * page_height);
-            std.debug.print("Restored state: page {d}, progress {d:.2} -> scroll {d}\n", .{ page_num, progress, current_scroll });
+            debugPrint("Restored state: page {d}, progress {d:.2} -> scroll {d}\n", .{ page_num, progress, current_scroll });
         } else {
-            std.debug.print("Invalid page number {d}, falling back to absolute position\n", .{page_num});
+            debugPrint("Invalid page number {d}, falling back to absolute position\n", .{page_num});
             current_scroll = parsed.value.scroll_pos;
         }
     } else {
         // Fallback to old absolute position method
         current_scroll = parsed.value.scroll_pos;
-        std.debug.print("Restored scroll position (legacy): {d}\n", .{current_scroll});
+        debugPrint("Restored scroll position (legacy): {d}\n", .{current_scroll});
     }
 
     // Clamp to valid range
@@ -207,8 +215,38 @@ pub fn main() !void {
 
     var args = std.process.args();
     _ = args.skip(); // skip executable
-    const path = if (args.next()) |p| p else {
-        std.debug.print("Usage: cbz_viewer <path_to_cbz_or_folder>\n", .{});
+
+    var file_path: ?[]const u8 = null;
+
+    // Parse arguments
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--debug")) {
+            debug_mode = true;
+            std.debug.print("Debug mode enabled\n", .{});
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            std.debug.print("Unknown option: {s}\n", .{arg});
+            std.debug.print("Usage: cbz_viewer [-d|--debug] <path_to_cbz_or_folder>\n", .{});
+            return;
+        } else {
+            if (file_path == null) {
+                file_path = arg;
+            } else {
+                std.debug.print("Too many arguments\n", .{});
+                std.debug.print("Usage: cbz_viewer [-d|--debug] <path_to_cbz_or_folder>\n", .{});
+                return;
+            }
+        }
+    }
+
+    // Set raylib log level based on debug flag
+    if (debug_mode) {
+        rl.SetTraceLogLevel(rl.LOG_INFO); // Show all raylib logs in debug mode
+    } else {
+        rl.SetTraceLogLevel(rl.LOG_ERROR); // Only show errors in normal mode
+    }
+
+    const path = file_path orelse {
+        std.debug.print("Usage: cbz_viewer [-d|--debug] <path_to_cbz_or_folder>\n", .{});
         return;
     };
 
@@ -227,10 +265,10 @@ pub fn main() !void {
         .flags = 0,
     };
     _ = posix.sigaction(posix.SIG.INT, &sigaction, null) catch |err| {
-        std.debug.print("Warning: Could not register SIGINT handler: {}\n", .{err});
+        debugPrint("Warning: Could not register SIGINT handler: {}\n", .{err});
     };
     _ = posix.sigaction(posix.SIG.TERM, &sigaction, null) catch |err| {
-        std.debug.print("Warning: Could not register SIGTERM handler: {}\n", .{err});
+        debugPrint("Warning: Could not register SIGTERM handler: {}\n", .{err});
     };
 
     // Initialize camera
@@ -250,9 +288,9 @@ pub fn main() !void {
     if (ui_font.texture.id == 0) {
         // Final fallback to default font
         ui_font = rl.GetFontDefault();
-        std.debug.print("Using default font (embedded JetBrains Mono failed to load)\n", .{});
+        debugPrint("Using default font (embedded JetBrains Mono failed to load)\n", .{});
     } else {
-        std.debug.print("Loaded embedded JetBrains Mono font successfully\n", .{});
+        debugPrint("Loaded embedded JetBrains Mono font successfully\n", .{});
     }
     defer if (ui_font.texture.id != rl.GetFontDefault().texture.id) rl.UnloadFont(ui_font);
 
@@ -260,9 +298,12 @@ pub fn main() !void {
     updateCumulative();
 
     // Initialize background image loader
-    bg_image_loader = image_loader.ImageLoader.init(allocator, @ptrCast(&cbz_files), extractImageForBackground);
+    bg_image_loader = image_loader.ImageLoader.init(allocator, @ptrCast(&cbz_files), extractImageForBackground, debug_mode);
     try bg_image_loader.start();
-    defer bg_image_loader.deinit();
+    defer {
+        bg_image_loader.stop(); // Stop the worker thread first
+        bg_image_loader.deinit(); // Then clean up resources
+    }
 
     // Load saved state after everything is initialized
     loadState();
@@ -290,7 +331,10 @@ pub fn main() !void {
         }
 
         // Process background loading results
-        processBackgroundResults();
+        bg_process_counter += 1;
+        if (bg_process_counter % 3 == 0) { // Only process every 3rd frame
+            processBackgroundResults();
+        }
 
         rl.BeginDrawing();
         rl.ClearBackground(rl.BLACK);
@@ -314,7 +358,7 @@ pub fn main() !void {
 
 fn loadPath(path: []const u8) !void {
     const stat = std.fs.cwd().statFile(path) catch |err| {
-        std.debug.print("Error accessing path: {}\n", .{err});
+        debugPrint("Error accessing path: {}\n", .{err});
         return;
     };
 
@@ -359,7 +403,7 @@ fn loadFolder(path: []const u8) !void {
 
     for (files.items) |file_path| {
         const cbz = loadCBZ(file_path) catch |err| {
-            std.debug.print("Error loading {s}: {}\n", .{ file_path, err });
+            debugPrint("Error loading {s}: {}\n", .{ file_path, err });
             continue;
         };
 
@@ -382,7 +426,7 @@ fn loadFolder(path: []const u8) !void {
     }
 
     total_pages = global_page_idx;
-    std.debug.print("Loaded {} CBZ files with {} total pages\n", .{ cbz_files.items.len, total_pages });
+    debugPrint("Loaded {} CBZ files with {} total pages\n", .{ cbz_files.items.len, total_pages });
 }
 
 fn loadSingleCBZ(file_path: []const u8) !void {
@@ -409,7 +453,7 @@ fn loadSingleCBZ(file_path: []const u8) !void {
 }
 
 fn loadCBZ(file_path: []const u8) !CBZFile {
-    std.debug.print("Loading CBZ: {s}\n", .{file_path});
+    debugPrint("Loading CBZ: {s}\n", .{file_path});
 
     const file = try std.fs.cwd().openFile(file_path, .{});
     // Don't close the file here - we need to keep it open for ZIP reading
@@ -744,12 +788,12 @@ fn processBackgroundResults() void {
         }
 
         if (!result.success) {
-            std.debug.print("Background loading failed for page {}\n", .{result.page_idx});
+            debugPrint("Background loading failed for page {}\n", .{result.page_idx});
             continue;
         }
 
         if (result.page_idx >= pages.items.len) {
-            std.debug.print("Invalid page index from background loader: {}\n", .{result.page_idx});
+            debugPrint("Invalid page index from background loader: {}\n", .{result.page_idx});
             continue;
         }
 
@@ -775,7 +819,7 @@ fn processBackgroundResults() void {
         const cbz = &cbz_files.items[page.file_idx];
         cbz.page_sizes.items[page.local_idx] = .{ .width = result.width, .height = result.height };
 
-        std.debug.print("Background loaded page {} ({}x{})\n", .{ result.page_idx, result.width, result.height });
+        debugPrint("Background loaded page {} ({}x{})\n", .{ result.page_idx, result.width, result.height });
     }
 }
 
@@ -821,9 +865,9 @@ fn updateLazyLoading() void {
     // std.debug.print("LAZY LOAD: Visible pages {}-{}, Loading range {}-{}, Currently loaded: {}\n", .{ start_page, end_page, load_start, load_end, loaded_count });
 
     // Request background loading for pages in range and beyond
-    // Load more aggressively in background since it doesn't block the main thread
-    const bg_load_start = if (load_start >= 10) load_start - 10 else 0;
-    const bg_load_end = @min(total_pages - 1, load_end + 20);
+    // Load conservatively in background - just a small buffer
+    const bg_load_start = if (load_start >= 2) load_start - 2 else 0;
+    const bg_load_end = @min(total_pages - 1, load_end + 3);
 
     for (bg_load_start..bg_load_end + 1) |i| {
         if (i < pages.items.len and !pages.items[i].loaded) {
@@ -836,7 +880,7 @@ fn updateLazyLoading() void {
             const priority = 1000 - @as(i32, @intCast(distance_from_visible));
 
             bg_image_loader.requestLoad(i, page.file_idx, page.local_idx, image_name, priority) catch |err| {
-                std.debug.print("Error requesting background load for page {}: {}\n", .{ i, err });
+                debugPrint("Error requesting background load for page {}: {}\n", .{ i, err });
             };
         }
     }
@@ -854,7 +898,7 @@ fn updateLazyLoading() void {
                 break; // Don't load more than max textures per frame synchronously
             }
             loadPageTexture(i) catch |err| {
-                std.debug.print("Error loading page {}: {}\n", .{ i, err });
+                debugPrint("Error loading page {}: {}\n", .{ i, err });
             };
             textures_loaded_this_frame += 1;
         }
@@ -891,7 +935,7 @@ fn loadPageTexture(page_idx: usize) !void {
     defer rl.UnloadImage(img);
 
     if (img.data == null) {
-        std.debug.print("Failed to load image: {s}\n", .{image_name});
+        debugPrint("Failed to load image: {s}\n", .{image_name});
         return;
     }
 

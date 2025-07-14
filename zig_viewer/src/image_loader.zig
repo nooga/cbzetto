@@ -7,6 +7,15 @@ const Mutex = std.Thread.Mutex;
 const Condition = std.Thread.Condition;
 const Atomic = std.atomic.Value;
 
+// Reference to debug mode from main.zig
+// extern var debug_mode: bool; // Removed as per edit hint
+
+fn debugPrint(debug_mode: bool, comptime fmt: []const u8, args: anytype) void {
+    if (debug_mode) {
+        std.debug.print(fmt, args);
+    }
+}
+
 /// Request for background image loading
 pub const LoadRequest = struct {
     page_idx: usize,
@@ -42,6 +51,7 @@ const RequestQueue = struct {
     mutex: Mutex,
     condition: Condition,
     allocator: Allocator,
+    pending_pages: std.AutoHashMap(usize, void), // Track pending page requests
 
     pub fn init(allocator: Allocator) RequestQueue {
         return RequestQueue{
@@ -49,6 +59,7 @@ const RequestQueue = struct {
             .mutex = Mutex{},
             .condition = Condition{},
             .allocator = allocator,
+            .pending_pages = std.AutoHashMap(usize, void).init(allocator),
         };
     }
 
@@ -56,19 +67,29 @@ const RequestQueue = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // Clean up any remaining requests
         for (self.items.items) |*request| {
             request.deinit(self.allocator);
         }
         self.items.deinit();
+        self.pending_pages.deinit();
     }
 
-    /// Add a request to the queue (higher priority items go first)
+    /// Add a request to the queue (sorted by priority)
     pub fn push(self: *RequestQueue, request: LoadRequest) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // Insert in priority order (higher priority first)
+        // Check if we already have a pending request for this page
+        if (self.pending_pages.contains(request.page_idx)) {
+            // Free the duplicate request's memory
+            self.allocator.free(request.image_name);
+            return; // Skip duplicate request
+        }
+
+        // Mark this page as pending
+        try self.pending_pages.put(request.page_idx, {});
+
+        // Find insertion point to maintain priority order (higher priority first)
         var insert_idx: usize = 0;
         for (self.items.items, 0..) |item, i| {
             if (request.priority > item.priority) {
@@ -83,15 +104,28 @@ const RequestQueue = struct {
     }
 
     /// Wait for a request to become available
-    pub fn waitForRequest(self: *RequestQueue) ?LoadRequest {
+    pub fn waitForRequest(self: *RequestQueue, should_stop: *const Atomic(bool)) ?LoadRequest {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        while (self.items.items.len == 0) {
+        while (self.items.items.len == 0 and !should_stop.load(.monotonic)) {
             self.condition.wait(&self.mutex);
         }
 
-        return self.items.orderedRemove(0);
+        // If we're stopping and no items, return null
+        if (should_stop.load(.monotonic) and self.items.items.len == 0) {
+            return null;
+        }
+
+        // If we have items, return the first one
+        if (self.items.items.len > 0) {
+            const request = self.items.orderedRemove(0);
+            // Remove from pending set when we start processing
+            _ = self.pending_pages.remove(request.page_idx);
+            return request;
+        }
+
+        return null;
     }
 
     /// Cancel loading requests for pages outside the given range
@@ -104,6 +138,8 @@ const RequestQueue = struct {
             const page_idx = self.items.items[i].page_idx;
             if (page_idx < start_page or page_idx > end_page) {
                 var request = self.items.orderedRemove(i);
+                // Remove from pending set when canceling
+                _ = self.pending_pages.remove(request.page_idx);
                 request.deinit(self.allocator);
             } else {
                 i += 1;
@@ -116,6 +152,13 @@ const RequestQueue = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.items.items.len;
+    }
+
+    /// Clear a page from pending set (called when processing is complete)
+    pub fn clearPending(self: *RequestQueue, page_idx: usize) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        _ = self.pending_pages.remove(page_idx);
     }
 };
 
@@ -180,8 +223,9 @@ pub const ImageLoader = struct {
     should_stop: Atomic(bool),
     cbz_files_ptr: *anyopaque, // Opaque pointer to avoid circular imports
     extract_fn: *const fn (*anyopaque, Allocator, []const u8, usize, usize) anyerror![]u8,
+    debug_mode: bool, // Added as per edit hint
 
-    pub fn init(allocator: Allocator, cbz_files_ptr: *anyopaque, extract_fn: *const fn (*anyopaque, Allocator, []const u8, usize, usize) anyerror![]u8) ImageLoader {
+    pub fn init(allocator: Allocator, cbz_files_ptr: *anyopaque, extract_fn: *const fn (*anyopaque, Allocator, []const u8, usize, usize) anyerror![]u8, debug_mode: bool) ImageLoader {
         return ImageLoader{
             .allocator = allocator,
             .request_queue = RequestQueue.init(allocator),
@@ -190,6 +234,7 @@ pub const ImageLoader = struct {
             .should_stop = Atomic(bool).init(false),
             .cbz_files_ptr = cbz_files_ptr,
             .extract_fn = extract_fn,
+            .debug_mode = debug_mode, // Added as per edit hint
         };
     }
 
@@ -257,11 +302,11 @@ pub const ImageLoader = struct {
 
 /// Worker thread function
 fn workerThread(loader: *ImageLoader) void {
-    std.debug.print("Background image loader thread started\n", .{});
+    debugPrint(loader.debug_mode, "Background image loader thread started\n", .{});
 
     while (!loader.should_stop.load(.monotonic)) {
         // Wait for a request
-        const request_opt = loader.request_queue.waitForRequest();
+        const request_opt = loader.request_queue.waitForRequest(&loader.should_stop);
         if (request_opt == null) continue;
 
         var request = request_opt.?;
@@ -275,18 +320,18 @@ fn workerThread(loader: *ImageLoader) void {
 
         // Add result to queue
         loader.result_queue.push(result) catch |err| {
-            std.debug.print("Error adding result to queue: {}\n", .{err});
+            debugPrint(loader.debug_mode, "Error adding result to queue: {}\n", .{err});
         };
     }
 
-    std.debug.print("Background image loader thread stopped\n", .{});
+    debugPrint(loader.debug_mode, "Background image loader thread stopped\n", .{});
 }
 
 /// Process a single load request (extract and decode image)
 fn processLoadRequest(loader: *ImageLoader, request: *const LoadRequest) LoadResult {
     // Extract image data using the provided function
     const image_data = loader.extract_fn(loader.cbz_files_ptr, loader.allocator, request.image_name, request.file_idx, request.local_idx) catch |err| {
-        std.debug.print("Error extracting image {s}: {}\n", .{ request.image_name, err });
+        debugPrint(loader.debug_mode, "Error extracting image {s}: {}\n", .{ request.image_name, err });
         return LoadResult{
             .page_idx = request.page_idx,
             .width = 0,
@@ -306,7 +351,7 @@ fn processLoadRequest(loader: *ImageLoader, request: *const LoadRequest) LoadRes
     defer rl.UnloadImage(img);
 
     if (img.data == null) {
-        std.debug.print("Failed to decode image: {s}\n", .{request.image_name});
+        debugPrint(loader.debug_mode, "Failed to decode image: {s}\n", .{request.image_name});
         return LoadResult{
             .page_idx = request.page_idx,
             .width = 0,
@@ -330,7 +375,7 @@ fn processLoadRequest(loader: *ImageLoader, request: *const LoadRequest) LoadRes
 
     // Copy pixel data
     const pixel_data = loader.allocator.alloc(u8, data_size) catch |err| {
-        std.debug.print("Error allocating pixel data: {}\n", .{err});
+        debugPrint(loader.debug_mode, "Error allocating pixel data: {}\n", .{err});
         return LoadResult{
             .page_idx = request.page_idx,
             .width = 0,
