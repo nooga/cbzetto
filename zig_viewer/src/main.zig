@@ -454,10 +454,28 @@ pub fn main() !void {
     // Disable escape key from closing window (in case gesture detection enabled it)
     rl.SetExitKey(rl.KEY_NULL); // Use KEY_NULL instead of 0
 
-    const path = file_path orelse {
-        std.debug.print("Usage: cbzt [-d|--debug] <path_to_cbz_or_folder>\n", .{});
-        return;
-    };
+    var path: []const u8 = undefined;
+    var dialog_path: ?[]u8 = null;
+
+    if (file_path) |fp| {
+        path = fp;
+    } else {
+        // No command line argument provided, show file dialog
+        dialog_path = macos_wrapper.openFileDialog(allocator);
+        if (dialog_path) |dp| {
+            path = dp;
+        } else {
+            // User canceled the dialog
+            return;
+        }
+    }
+
+    // Clean up dialog path when done
+    defer {
+        if (dialog_path) |dp| {
+            allocator.free(dp);
+        }
+    }
 
     // Set window flags before initialization
     rl.SetConfigFlags(rl.FLAG_WINDOW_RESIZABLE);
@@ -548,6 +566,38 @@ pub fn main() !void {
             }
             // Don't let escape close the window - consume the key press
             continue;
+        }
+
+        // Check if user selected "Open..." from menu
+        if (macos_wrapper.shouldOpenFile()) {
+            macos_wrapper.resetOpenFileFlag();
+            if (macos_wrapper.openFileDialog(allocator)) |new_path| {
+                defer allocator.free(new_path);
+                // Clean up current state before loading new file
+                for (pages.items) |*page| {
+                    if (page.loaded) {
+                        rl.UnloadTexture(page.texture);
+                        page.loaded = false;
+                    }
+                }
+                pages.clearAndFree();
+                for (cbz_files.items) |*cbz| {
+                    cbz.deinit();
+                }
+                cbz_files.clearAndFree();
+                file_page_starts.clearAndFree();
+                cumulative_heights.clearAndFree();
+                total_height = 0.0;
+                total_pages = 0;
+                current_scroll = 0.0;
+                last_scroll = -1.0;
+                // Reset camera
+                camera.target = rl.Vector2{ .x = 0, .y = 0 };
+                // Load new file
+                loadPath(new_path) catch |err| {
+                    std.debug.print("Error loading new file: {}\n", .{err});
+                };
+            }
         }
 
         // Detect input activity before processing input
