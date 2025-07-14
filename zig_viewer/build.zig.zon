@@ -1,0 +1,13 @@
+.{
+    .name = "cbz_viewer",
+    .version = "0.0.1",
+    .dependencies = .{
+        .raylib = .{
+            .url = "https://github.com/raysan5/raylib/archive/5.5.tar.gz",
+            .hash = "1220d93782859726c2c46a05450615b7edfc82b7319daac50cbc7c3345d660b022d7",
+        },
+    },
+    .paths = .{
+        "",
+    },
+}

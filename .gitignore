@@ -1,0 +1,25 @@
+# Zig cache and build directories
+.zig-cache/
+zig-out/
+
+# Test folder
+test/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# CBZ viewer state files
+.cbzviewer_state.json
