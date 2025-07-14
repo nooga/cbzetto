@@ -6,6 +6,7 @@ const embedded_font = @import("embedded_font.zig");
 const image_loader = @import("image_loader.zig");
 const json = std.json;
 const posix = std.posix;
+const macos_wrapper = @import("macos_wrapper.zig");
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
@@ -264,6 +265,9 @@ pub fn main() !void {
     rl.InitWindow(800, 600, "CBZT");
     defer rl.CloseWindow();
     rl.SetTargetFPS(60);
+
+    // Initialize macOS-specific features (icon, menu bar, etc.)
+    macos_wrapper.initializeMacOSFeatures();
 
     // Enable gesture detection for pinch-to-zoom
     rl.SetGesturesEnabled(rl.GESTURE_PINCH_IN | rl.GESTURE_PINCH_OUT);
