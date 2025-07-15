@@ -52,6 +52,7 @@ var zoom_level: f32 = 1.0; // Current zoom level
 var folder_path: ?[]const u8 = null;
 var ui_font: rl.Font = undefined;
 var force_render_frames: u32 = 0; // Force rendering for initial frames after state restoration
+var needs_render: bool = true; // Track when rendering is actually needed
 var show_help: bool = false; // Show keyboard shortcuts help
 var bg_image_loader: image_loader.ImageLoader = undefined;
 var bg_process_counter: u32 = 0; // Throttling counter for background processing
@@ -597,6 +598,7 @@ pub fn main() !void {
                 loadPath(new_path) catch |err| {
                     std.debug.print("Error loading new file: {}\n", .{err});
                 };
+                needs_render = true; // Force render after loading new file
             }
         }
 
@@ -609,8 +611,14 @@ pub fn main() !void {
         // Update dynamic FPS based on activity
         updateDynamicFPS();
 
+        // Check if we need to render
+        const scroll_changed = @abs(current_scroll - last_scroll) > 5.0 or last_scroll == -1.0;
+        const has_forced_frames = force_render_frames > 0;
+        const window_resized = rl.IsWindowResized();
+        needs_render = activity_detected or scroll_changed or has_forced_frames or show_help or window_resized;
+
         // Only update lazy loading when scroll position changes significantly, or when forced
-        if (@abs(current_scroll - last_scroll) > 5.0 or last_scroll == -1.0 or force_render_frames > 0) {
+        if (scroll_changed or has_forced_frames) {
             updateLazyLoading();
             last_scroll = current_scroll;
             if (force_render_frames > 0) {
@@ -624,22 +632,29 @@ pub fn main() !void {
             const had_results = processBackgroundResults();
             if (had_results) {
                 markActivity(); // Mark activity when new textures are loaded
+                needs_render = true; // Force a render when new textures are loaded
             }
         }
 
-        // Always render for now - conditional rendering was causing issues
+        // Always do the raylib frame cycle to process events properly
         rl.BeginDrawing();
-        rl.ClearBackground(rl.BLACK);
-        rl.BeginMode2D(camera);
 
-        renderPages();
+        // Only do actual rendering when needed
+        if (needs_render) {
+            rl.ClearBackground(rl.BLACK);
+            rl.BeginMode2D(camera);
 
-        rl.EndMode2D();
-        drawIndicator();
+            renderPages();
 
-        if (show_help) {
-            drawHelp();
+            rl.EndMode2D();
+            drawIndicator();
+
+            if (show_help) {
+                drawHelp();
+            }
         }
+        // When idle, we still call BeginDrawing/EndDrawing to process events
+        // but skip the actual drawing - the screen keeps the previous frame
 
         rl.EndDrawing();
     }
