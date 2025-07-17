@@ -76,3 +76,7 @@ Despite what the icon might suggest, CBZetto:
 - Works with any CBZ file
 - Does not come with manga preloaded
 - Will absolutely remember what you were reading if someone walks in
+
+## License
+
+MIT License - See [LICENSE](LICENSE) file for details.
