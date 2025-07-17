@@ -23,3 +23,6 @@ Thumbs.db
 
 # CBZ viewer state files
 .cbzviewer_state.json
+CBZetto.app/
+CBZetto.zip
+Contents/

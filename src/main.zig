@@ -59,6 +59,7 @@ var bg_process_counter: u32 = 0; // Throttling counter for background processing
 var debug_mode: bool = false; // Enable debug output when -d flag is used
 var loaded_texture_count: u32 = 0; // Track number of loaded textures
 const max_loaded_textures: u32 = 50; // Limit to prevent GPU memory issues
+var background_is_white: bool = false; // Toggle between black and white background
 
 // Dynamic FPS system for power efficiency
 var activity_detected: bool = false;
@@ -101,6 +102,8 @@ fn updateDynamicFPS() void {
             last_fps_change = current_time;
             needs_redraw = true; // Ensure we render one final frame at idle FPS
             debugPrint("Switching to idle FPS: {}\n", .{idle_fps});
+            // Save state when going idle to preserve reading progress
+            saveState();
         }
     }
 
@@ -164,6 +167,7 @@ const StateData = struct {
     window_height: ?i32 = null, // Window height
     window_x: ?i32 = null, // Window X position
     window_y: ?i32 = null, // Window Y position
+    background_is_white: ?bool = null, // Background color toggle state
 };
 
 fn saveState() void {
@@ -202,6 +206,7 @@ fn saveState() void {
         .window_height = rl.GetScreenHeight(),
         .window_x = @as(i32, @intFromFloat(rl.GetWindowPosition().x)),
         .window_y = @as(i32, @intFromFloat(rl.GetWindowPosition().y)),
+        .background_is_white = background_is_white,
     };
 
     const file = std.fs.cwd().createFile(state_path, .{}) catch |err| {
@@ -274,6 +279,12 @@ fn loadState() void {
         const max_zoom: f32 = 5.0;
         zoom_level = std.math.clamp(zoom_level, min_zoom, max_zoom);
         debugPrint("Restored zoom level: {d:.2}\n", .{zoom_level});
+    }
+
+    // Restore background color if available
+    if (parsed.value.background_is_white != null) {
+        background_is_white = parsed.value.background_is_white.?;
+        debugPrint("Restored background color: {s}\n", .{if (background_is_white) "white" else "black"});
     }
 
     // Clamp to valid range
@@ -479,7 +490,7 @@ pub fn main() !void {
     }
 
     // Set window flags before initialization
-    rl.SetConfigFlags(rl.FLAG_WINDOW_RESIZABLE);
+    rl.SetConfigFlags(rl.FLAG_WINDOW_RESIZABLE | rl.FLAG_VSYNC_HINT);
 
     // Initialize window
     rl.InitWindow(800, 600, "CBZT");
@@ -641,7 +652,8 @@ pub fn main() !void {
 
         // Only do actual rendering when needed
         if (needs_render) {
-            rl.ClearBackground(rl.BLACK);
+            const bg_color = if (background_is_white) rl.WHITE else rl.BLACK;
+            rl.ClearBackground(bg_color);
             rl.BeginMode2D(camera);
 
             renderPages();
@@ -1045,6 +1057,12 @@ fn handleInput() void {
         show_help = !show_help;
     }
 
+    // Background color toggle
+    if (rl.IsKeyPressed(rl.KEY_B)) {
+        background_is_white = !background_is_white;
+        markActivity(); // Mark activity when background changes
+    }
+
     // Zoom controls
     const zoom_speed: f32 = 0.1;
     const min_zoom: f32 = 0.1;
@@ -1075,7 +1093,7 @@ fn handleInput() void {
         zoom_level = std.math.clamp(zoom_level + 0.05, min_zoom, max_zoom);
     }
 
-    const max_scroll = @max(0.0, (total_height * zoom_level) - screen_height);
+    const max_scroll = @max(0.0, total_height - screen_height);
     current_scroll = std.math.clamp(current_scroll, 0.0, max_scroll);
 
     if (rl.IsWindowResized()) {
@@ -1533,12 +1551,12 @@ fn drawIndicator() void {
 
     // Update window title with current file name
     var title_buf: [512]u8 = undefined;
-    const title = std.fmt.bufPrintZ(title_buf[0..], "CBZT - {s}", .{current_file}) catch "CBZT";
+    const title = std.fmt.bufPrintZ(title_buf[0..], "CBZetto - {s}", .{current_file}) catch "CBZetto";
     rl.SetWindowTitle(title.ptr);
 
     // Create text buffer with null terminator (without filename, now in title)
     var text_buf: [512]u8 = undefined;
-    const text = std.fmt.bufPrintZ(text_buf[0..], "Page {d}/{d} ({d}%) | Global: {d}/{d} ({d}%)", .{ local_page, local_total, local_percentage, current_page, total_pages, global_percentage }) catch "Error";
+    const text = std.fmt.bufPrintZ(text_buf[0..], "Page {d}/{d} ({d}%) | {d}/{d} ({d}%)", .{ local_page, local_total, local_percentage, current_page, total_pages, global_percentage }) catch "Error";
 
     // Measure text with the UI font using scaled size
     const font_size = embedded_font.getScaledFontSize(18);
@@ -1570,7 +1588,7 @@ fn drawHelp() void {
     // Draw semi-transparent background
     rl.DrawRectangle(0, 0, screen_width, screen_height, rl.Color{ .r = 0, .g = 0, .b = 0, .a = 200 });
 
-    const help_lines = [_][]const u8{ "CBZT - Keyboard Controls", "", "Navigation:", "  ↑/↓ Arrow Keys    - Jump up/down one screen", "  Shift + ↑/↓       - Jump to previous/next page", "  Ctrl/Cmd+Shift+↑/↓ - Jump to previous/next file", "  Page Up/Down      - Jump up/down one screen", "  Home              - Jump to beginning", "  End               - Jump to end", "", "Zoom:", "  + or =            - Zoom in", "  - or _            - Zoom out", "  0                 - Reset zoom to 100%", "  Ctrl/Cmd + Wheel  - Zoom in/out", "  Pinch gestures    - Zoom in/out (macOS)", "", "Other:", "  H or F1           - Show/hide this help", "  Escape            - Close help", "  Mouse Wheel       - Scroll up/down", "", "Press H or F1 to close this help" };
+    const help_lines = [_][]const u8{ "CBZetto - Keyboard Controls", "", "Navigation:", "  ↑/↓ Arrow Keys    - Jump up/down one screen", "  Shift + ↑/↓       - Jump to previous/next page", "  Ctrl/Cmd+Shift+↑/↓ - Jump to previous/next file", "  Page Up/Down      - Jump up/down one screen", "  Home              - Jump to beginning", "  End               - Jump to end", "", "Zoom:", "  + or =            - Zoom in", "  - or _            - Zoom out", "  0                 - Reset zoom to 100%", "  Ctrl/Cmd + Wheel  - Zoom in/out", "  Pinch gestures    - Zoom in/out (macOS)", "", "Other:", "  B                 - Toggle background (black/white)", "  H or F1           - Show/hide this help", "  Escape            - Close help", "  Mouse Wheel       - Scroll up/down", "", "Press H or F1 to close this help" };
 
     const font_size = embedded_font.getScaledFontSize(16);
     const line_height = @as(i32, @intFromFloat(font_size * 1.25));
@@ -1590,7 +1608,7 @@ fn drawHelp() void {
 
     // Draw help text line by line
     for (help_lines, 0..) |line, i| {
-        const text_color = if (std.mem.startsWith(u8, line, "CBZT")) rl.Color{ .r = 255, .g = 255, .b = 100, .a = 255 } else rl.WHITE;
+        const text_color = if (std.mem.startsWith(u8, line, "CBZetto")) rl.Color{ .r = 255, .g = 255, .b = 100, .a = 255 } else rl.WHITE;
 
         // Create null-terminated string for raylib
         var line_buf: [256]u8 = undefined;

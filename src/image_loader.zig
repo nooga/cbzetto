@@ -363,7 +363,7 @@ fn processLoadRequest(loader: *ImageLoader, request: *const LoadRequest) LoadRes
     }
 
     // Check for large textures and downsample if needed
-    const max_texture_size: i32 = 2048;
+    const max_texture_size: i32 = 1024; // Reduced from 2048 to avoid GPU memory issues
     var final_img = img;
     var needs_resize = false;
 
