@@ -9,15 +9,9 @@ A stupid-fast, minimal CBZ reader for macOS — written in Zig and powered by Ra
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.13.0-orange.svg)](https://ziglang.org/)
-[![macOS](https://img.shields.io/badge/macOS-10.12+-black.svg)](https://www.apple.com/macos/)
+[![macOS](https://img.shields.io/badge/macOS-14+_Apple_Sillicon-black.svg)](https://www.apple.com/macos/)
 
 </div>
-
----
-
-Built out of pure spite for slow manga viewers and an unhealthy obsession with scroll performance.
-
-CBZetto does one thing — scroll _HUGE_ comics quickly.
 
 ## Features
 
@@ -88,6 +82,8 @@ The `build_release.sh` script creates a proper macOS app bundle with:
 - Multi-resolution app icon
 - File associations for `.cbz` and `.cbr`
 - Notarization-ready `.dmg`
+
+Or, `zig build run` to run the app directly from source.
 
 **Key design decisions:**
 
