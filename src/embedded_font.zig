@@ -2,14 +2,10 @@ const std = @import("std");
 const rl = @cImport(@cInclude("raylib.h"));
 const font_data = @import("embedded_font_data.zig");
 
-// GLFW functions declared directly (linked via raylib)
-const GLFWwindow = opaque {};
-const GLFWmonitor = opaque {};
-extern fn glfwGetCurrentContext() ?*GLFWwindow;
-extern fn glfwGetPrimaryMonitor() ?*GLFWmonitor;
-extern fn glfwGetWindowMonitor(window: *GLFWwindow) ?*GLFWmonitor;
-extern fn glfwGetMonitorContentScale(monitor: *GLFWmonitor, xscale: *f32, yscale: *f32) void;
-extern fn glfwGetCocoaWindow(window: *GLFWwindow) ?*anyopaque;
+// Import GLFW for content scale detection
+const glfw = @cImport({
+    @cInclude("GLFW/glfw3.h");
+});
 
 pub fn loadEmbeddedFont(fontSize: i32) rl.Font {
     // Load font from embedded Zig data at the requested size
@@ -33,14 +29,14 @@ pub fn loadEmbeddedFontForSize(targetSize: i32) rl.Font {
 pub fn getContentScale() f32 {
     // Get the current monitor's content scale using GLFW
     // This is the proper way to detect high DPI displays
-    const monitor = glfwGetPrimaryMonitor();
+    const monitor = glfw.glfwGetPrimaryMonitor();
     if (monitor == null) {
         return 1.0;
     }
 
     var xscale: f32 = 1.0;
     var yscale: f32 = 1.0;
-    glfwGetMonitorContentScale(monitor.?, &xscale, &yscale);
+    glfw.glfwGetMonitorContentScale(monitor, &xscale, &yscale);
 
     // Use the larger of the two scales (they should usually be the same)
     return @max(xscale, yscale);
@@ -49,13 +45,13 @@ pub fn getContentScale() f32 {
 pub fn getWindowContentScale() f32 {
     // Get the content scale for the current window's monitor
     // This is more accurate than using the primary monitor
-    const window = glfwGetCurrentContext();
+    const window = glfw.glfwGetCurrentContext();
     if (window == null) {
         return getContentScale();
     }
 
-    const monitor = glfwGetWindowMonitor(window.?);
-    const target_monitor = if (monitor != null) monitor else glfwGetPrimaryMonitor();
+    const monitor = glfw.glfwGetWindowMonitor(window);
+    const target_monitor = if (monitor != null) monitor else glfw.glfwGetPrimaryMonitor();
 
     if (target_monitor == null) {
         return 1.0;
@@ -63,7 +59,7 @@ pub fn getWindowContentScale() f32 {
 
     var xscale: f32 = 1.0;
     var yscale: f32 = 1.0;
-    glfwGetMonitorContentScale(target_monitor.?, &xscale, &yscale);
+    glfw.glfwGetMonitorContentScale(target_monitor, &xscale, &yscale);
 
     return @max(xscale, yscale);
 }
@@ -72,11 +68,4 @@ pub fn getScaledFontSize(targetSize: i32) f32 {
     // Return the target size as float for rendering
     // The font is loaded at 2x but we render at the target size
     return @as(f32, @floatFromInt(targetSize));
-}
-
-// Get the native Cocoa NSWindow handle for the current GLFW window
-pub fn getCocoaWindow() ?*anyopaque {
-    const window = glfwGetCurrentContext();
-    if (window == null) return null;
-    return glfwGetCocoaWindow(window.?);
 }

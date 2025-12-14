@@ -498,8 +498,7 @@ pub fn main() !void {
     macos_wrapper.initializeMacOSFeatures();
 
     // Set up native macOS magnification gesture for trackpad pinch-to-zoom
-    const nsWindow = embedded_font.getCocoaWindow();
-    macos_wrapper.setupMagnificationGesture(nsWindow);
+    macos_wrapper.installPinchRecognizer(rl.GetWindowHandle());
 
     // Register signal handlers for graceful shutdown
     const sigaction = posix.Sigaction{
@@ -1080,7 +1079,7 @@ fn handleInput() void {
     }
 
     // Native macOS trackpad pinch-to-zoom
-    const magnification = macos_wrapper.getMagnificationDelta();
+    const magnification = macos_wrapper.consumeMagnifyDelta();
     if (magnification != 0.0) {
         zoom_level = std.math.clamp(zoom_level + magnification, min_zoom, max_zoom);
         markActivity();
