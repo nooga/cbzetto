@@ -107,7 +107,6 @@ if [ ! -f "$NAME.app/Contents/Info.plist" ]; then
             <key>CFBundleTypeExtensions</key>
             <array>
                 <string>cbz</string>
-                <string>cbr</string>
             </array>
             <key>CFBundleTypeName</key>
             <string>Comic Book Archive</string>
