@@ -1,6 +1,6 @@
 .{
     .name = "cbz_viewer",
-    .version = "0.0.1",
+    .version = "0.0.2",
     .dependencies = .{
         .raylib = .{
             .url = "https://github.com/raysan5/raylib/archive/5.5.tar.gz",
