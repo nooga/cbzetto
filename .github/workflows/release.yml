@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate version
+        run: |
+          # Extract version from build.zig.zon
+          ZON_VERSION=$(grep '\.version' build.zig.zon | sed 's/.*"\(.*\)".*/\1/')
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+
+          echo "build.zig.zon version: $ZON_VERSION"
+          echo "Tag version: $TAG_VERSION"
+
+          if [ "$ZON_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Version mismatch! Tag is v$TAG_VERSION but build.zig.zon has $ZON_VERSION"
+            echo "Update build.zig.zon to match the tag version before releasing."
+            exit 1
+          fi
+
+          echo "VERSION=$ZON_VERSION" >> $GITHUB_ENV
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Build App Bundle
+        run: |
+          # Run build_release.sh non-interactively (answer 'n' to package prompt)
+          echo "n" | ./build_release.sh
+
+          # Update version in Info.plist from build.zig.zon
+          sed -i '' "s/<string>1.0<\/string>/<string>$VERSION<\/string>/g" CBZetto.app/Contents/Info.plist
+
+      - name: Create DMG
+        run: |
+          NAME="CBZetto"
+
+          # Create a temporary folder for DMG contents
+          mkdir -p dmg_contents
+          cp -r $NAME.app dmg_contents/
+
+          # Create a symbolic link to Applications
+          ln -s /Applications dmg_contents/Applications
+
+          # Create the DMG
+          hdiutil create -volname "$NAME $VERSION" -srcfolder dmg_contents -ov -format UDZO "${NAME}-${VERSION}.dmg"
+
+          rm -rf dmg_contents
+
+      - name: Create ZIP of App Bundle
+        run: |
+          NAME="CBZetto"
+          zip -r "${NAME}-${VERSION}.zip" $NAME.app
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            CBZetto-*.dmg
+            CBZetto-*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
