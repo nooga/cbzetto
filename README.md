@@ -39,7 +39,7 @@ CBZetto does one thing — scroll _HUGE_ comics quickly.
 | `+` `-` `0`           | Zoom in/out/reset       |
 | `Cmd+O`               | Open file/folder        |
 | `B`                   | Toggle background color |
-| `H`                   | Show help               |
+| `H`, `F1`, `?`        | Show help               |
 | `Esc` `Q`             | Quit                    |
 
 ## Installation

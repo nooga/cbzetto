@@ -51,6 +51,7 @@ var last_scroll: f32 = -1.0; // Track last scroll position to avoid unnecessary 
 var zoom_level: f32 = 1.0; // Current zoom level
 var folder_path: ?[]const u8 = null;
 var ui_font: rl.Font = undefined;
+var app_icon: rl.Texture2D = undefined; // App icon for help dialog
 var force_render_frames: u32 = 0; // Force rendering for initial frames after state restoration
 var needs_render: bool = true; // Track when rendering is actually needed
 var show_help: bool = false; // Show keyboard shortcuts help
@@ -536,6 +537,10 @@ pub fn main() !void {
     }
     defer if (ui_font.texture.id != rl.GetFontDefault().texture.id) rl.UnloadFont(ui_font);
 
+    // Load app icon for help dialog
+    app_icon = rl.LoadTexture("resources/icon.png");
+    defer if (app_icon.id != 0) rl.UnloadTexture(app_icon);
+
     updateCumulative();
 
     // Initialize background image loader
@@ -565,13 +570,30 @@ pub fn main() !void {
     restoreWindowProperties();
 
     while (!rl.WindowShouldClose()) {
-        // Handle escape key explicitly to prevent window closing
-        if (rl.IsKeyPressed(rl.KEY_ESCAPE)) {
-            if (show_help) {
+        // Help dismissal and quit handling
+        var help_just_dismissed = false;
+        if (show_help) {
+            // When help is showing, these keys/clicks dismiss it
+            if (rl.IsKeyPressed(rl.KEY_ESCAPE) or
+                rl.IsKeyPressed(rl.KEY_H) or
+                rl.IsKeyPressed(rl.KEY_F1) or
+                rl.IsKeyPressed(rl.KEY_SLASH) or // ? key (shift+/)
+                rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT))
+            {
                 show_help = false;
+                help_just_dismissed = true;
+                markActivity();
             }
-            // Don't let escape close the window - consume the key press
-            continue;
+        } else {
+            // When help is not showing
+            if (rl.IsKeyPressed(rl.KEY_ESCAPE) or rl.IsKeyPressed(rl.KEY_Q)) {
+                break; // Quit the app
+            }
+        }
+
+        // Prevent the click that dismissed help from also triggering scroll/zoom
+        if (help_just_dismissed) {
+            // Just render this frame and continue
         }
 
         // Check if user selected "Open..." from menu
@@ -1046,8 +1068,9 @@ fn handleInput() void {
         current_scroll += screen_height;
     }
 
-    // Help toggle
-    if (rl.IsKeyPressed(rl.KEY_H) or rl.IsKeyPressed(rl.KEY_F1)) {
+    // Help toggle (H, F1, or ? key)
+    // Note: ? is Shift+/ but raylib reports it as KEY_SLASH when shift is held
+    if (rl.IsKeyPressed(rl.KEY_H) or rl.IsKeyPressed(rl.KEY_F1) or rl.IsKeyPressed(rl.KEY_SLASH)) {
         show_help = !show_help;
     }
 
@@ -1566,52 +1589,117 @@ fn drawIndicator() void {
     const text_x = bg_x + padding;
     const text_y = bg_y + padding;
 
-    // Draw background
-    rl.DrawRectangle(bg_x, bg_y, bg_width, bg_height, rl.Color{ .r = 0, .g = 0, .b = 0, .a = 180 });
-
-    // Draw text with better font
-    rl.DrawTextEx(ui_font, text.ptr, rl.Vector2{ .x = @floatFromInt(text_x), .y = @floatFromInt(text_y) }, font_size, 1.0, rl.WHITE);
+    // Draw background and text with colors based on background mode
+    if (background_is_white) {
+        rl.DrawRectangle(bg_x, bg_y, bg_width, bg_height, rl.Color{ .r = 255, .g = 255, .b = 255, .a = 180 });
+        rl.DrawTextEx(ui_font, text.ptr, rl.Vector2{ .x = @floatFromInt(text_x), .y = @floatFromInt(text_y) }, font_size, 1.0, rl.BLACK);
+    } else {
+        rl.DrawRectangle(bg_x, bg_y, bg_width, bg_height, rl.Color{ .r = 0, .g = 0, .b = 0, .a = 180 });
+        rl.DrawTextEx(ui_font, text.ptr, rl.Vector2{ .x = @floatFromInt(text_x), .y = @floatFromInt(text_y) }, font_size, 1.0, rl.WHITE);
+    }
 }
 
 fn drawHelp() void {
     const screen_width = rl.GetScreenWidth();
     const screen_height = rl.GetScreenHeight();
 
-    // Draw semi-transparent background
-    rl.DrawRectangle(0, 0, screen_width, screen_height, rl.Color{ .r = 0, .g = 0, .b = 0, .a = 200 });
+    // Draw semi-transparent background overlay
+    rl.DrawRectangle(0, 0, screen_width, screen_height, rl.Color{ .r = 0, .g = 0, .b = 0, .a = 180 });
 
-    const help_lines = [_][]const u8{ "CBZetto - Keyboard Controls", "", "Navigation:", "  ↑/↓ Arrow Keys    - Jump up/down one screen", "  Shift + ↑/↓       - Jump to previous/next page", "  Ctrl/Cmd+Shift+↑/↓ - Jump to previous/next file", "  Page Up/Down      - Jump up/down one screen", "  Home              - Jump to beginning", "  End               - Jump to end", "", "Zoom:", "  + or =            - Zoom in", "  - or _            - Zoom out", "  0                 - Reset zoom to 100%", "  Ctrl/Cmd + Wheel  - Zoom in/out", "  Pinch gestures    - Zoom in/out (macOS)", "", "Other:", "  B                 - Toggle background (black/white)", "  H or F1           - Show/hide this help", "  Escape            - Close help", "  Mouse Wheel       - Scroll up/down", "", "Press H or F1 to close this help" };
+    const help_lines = [_][]const u8{
+        "", // Space for icon
+        "CBZetto",
+        "",
+        "Navigation:",
+        "  Up/Down           Scroll",
+        "  Shift + Up/Down   Previous/next page",
+        "  Page Up/Down      Jump one screen",
+        "  Home / End        Beginning / end",
+        "",
+        "Zoom:",
+        "  + / -             Zoom in/out",
+        "  0                 Reset zoom",
+        "  Cmd + Wheel       Zoom in/out",
+        "  Pinch             Zoom (trackpad)",
+        "",
+        "Other:",
+        "  B                 Toggle background",
+        "  Cmd + O           Open file/folder",
+        "  H / ?             Toggle this help",
+        "  Esc / Q           Quit",
+        "",
+        "Click anywhere or press Esc to close",
+    };
 
-    const font_size = embedded_font.getScaledFontSize(16);
-    const line_height = @as(i32, @intFromFloat(font_size * 1.25));
-    const margin = 50;
+    // Use the font at its native size (18) for crisp rendering
+    const font_size = embedded_font.getScaledFontSize(18);
+    const line_height = @as(i32, @intFromFloat(font_size * 1.4));
+    const padding = 30;
+
+    // Icon size
+    const icon_size: i32 = 64;
+    const icon_padding: i32 = 20;
 
     // Calculate text dimensions
-    const text_width = 400;
-    const text_height = @as(i32, @intCast(help_lines.len)) * line_height;
+    const text_width = 380;
+    const text_height = @as(i32, @intCast(help_lines.len)) * line_height + icon_size + icon_padding;
 
     // Center the help box
     const box_x = @divTrunc(screen_width - text_width, 2);
     const box_y = @divTrunc(screen_height - text_height, 2);
 
     // Draw help box background
-    rl.DrawRectangle(box_x - margin, box_y - margin, text_width + margin * 2, text_height + margin * 2, rl.Color{ .r = 40, .g = 40, .b = 40, .a = 240 });
-    rl.DrawRectangleLines(box_x - margin, box_y - margin, text_width + margin * 2, text_height + margin * 2, rl.WHITE);
+    rl.DrawRectangle(box_x - padding, box_y - padding, text_width + padding * 2, text_height + padding * 2, rl.Color{ .r = 30, .g = 30, .b = 30, .a = 245 });
+    rl.DrawRectangleLines(box_x - padding, box_y - padding, text_width + padding * 2, text_height + padding * 2, rl.Color{ .r = 80, .g = 80, .b = 80, .a = 255 });
+
+    // Draw icon centered at the top
+    if (app_icon.id != 0) {
+        const icon_x = box_x + @divTrunc(text_width - icon_size, 2);
+        const icon_y = box_y;
+        rl.DrawTexturePro(
+            app_icon,
+            rl.Rectangle{ .x = 0, .y = 0, .width = @floatFromInt(app_icon.width), .height = @floatFromInt(app_icon.height) },
+            rl.Rectangle{ .x = @floatFromInt(icon_x), .y = @floatFromInt(icon_y), .width = @floatFromInt(icon_size), .height = @floatFromInt(icon_size) },
+            rl.Vector2{ .x = 0, .y = 0 },
+            0,
+            rl.WHITE,
+        );
+    }
+
+    // Offset for text after icon
+    const text_start_y = box_y + icon_size + icon_padding;
 
     // Draw help text line by line
     for (help_lines, 0..) |line, i| {
-        const text_color = if (std.mem.startsWith(u8, line, "CBZetto")) rl.Color{ .r = 255, .g = 255, .b = 100, .a = 255 } else rl.WHITE;
+        // Skip the first empty line (icon placeholder)
+        if (i == 0) continue;
+
+        // Title in yellow, section headers in light gray, rest in white
+        const text_color = if (std.mem.startsWith(u8, line, "CBZetto"))
+            rl.Color{ .r = 255, .g = 220, .b = 100, .a = 255 }
+        else if (std.mem.endsWith(u8, line, ":"))
+            rl.Color{ .r = 150, .g = 150, .b = 150, .a = 255 }
+        else if (std.mem.startsWith(u8, line, "Click"))
+            rl.Color{ .r = 120, .g = 120, .b = 120, .a = 255 }
+        else
+            rl.WHITE;
 
         // Create null-terminated string for raylib
         var line_buf: [256]u8 = undefined;
         const line_z = std.fmt.bufPrintZ(line_buf[0..], "{s}", .{line}) catch blk: {
-            // Fallback: create a null-terminated copy
             @memcpy(line_buf[0..line.len], line);
             line_buf[line.len] = 0;
             break :blk line_buf[0..line.len :0];
         };
 
-        const y_pos = @as(f32, @floatFromInt(box_y)) + @as(f32, @floatFromInt(@as(i32, @intCast(i)) * line_height));
-        rl.DrawTextEx(ui_font, line_z, rl.Vector2{ .x = @as(f32, @floatFromInt(box_x)), .y = y_pos }, font_size, 1.0, text_color);
+        // Center the title
+        var x_pos = @as(f32, @floatFromInt(box_x));
+        if (std.mem.startsWith(u8, line, "CBZetto")) {
+            const title_width = rl.MeasureTextEx(ui_font, line_z, font_size, 0.5).x;
+            x_pos = @as(f32, @floatFromInt(box_x)) + (@as(f32, @floatFromInt(text_width)) - title_width) / 2.0;
+        }
+
+        const y_pos = @as(f32, @floatFromInt(text_start_y)) + @as(f32, @floatFromInt(@as(i32, @intCast(i - 1)) * line_height));
+        rl.DrawTextEx(ui_font, line_z, rl.Vector2{ .x = x_pos, .y = y_pos }, font_size, 0.5, text_color);
     }
 }
