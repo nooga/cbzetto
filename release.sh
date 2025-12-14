@@ -54,11 +54,15 @@ fi
 
 # Update build.zig.zon
 sed -i '' "s/\.version = \"$CURRENT_VERSION\"/\.version = \"$NEW_VERSION\"/" build.zig.zon
-
 echo "Updated build.zig.zon"
 
+# Update download link in docs/index.html
+DMG_URL="https://github.com/nooga/cbzetto/releases/download/v${NEW_VERSION}/CBZetto-${NEW_VERSION}.dmg"
+sed -i '' "s|href=\"https://github.com/nooga/cbzetto/releases/[^\"]*\" class=\"download-btn\"|href=\"${DMG_URL}\" class=\"download-btn\"|" docs/index.html
+echo "Updated docs/index.html download link"
+
 # Commit and tag
-git add build.zig.zon
+git add build.zig.zon docs/index.html
 git commit -m "Bump version to $NEW_VERSION"
 git tag "v$NEW_VERSION"
 

@@ -1,203 +1,265 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CBZetto - Stupid-fast CBZ Reader for macOS</title>
+    <link
+      rel="icon"
+      type="image/png"
+      href="https://raw.githubusercontent.com/nooga/cbzetto/main/resources/icon.png"
+    />
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background: #0d1117;
-            color: #e6edf3;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 60px 20px;
-        }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+        background: #fafafa;
+        color: #1a1a1a;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 60px 20px;
+      }
 
-        .container {
-            max-width: 600px;
-            text-align: center;
-        }
+      .container {
+        max-width: 600px;
+        text-align: center;
+      }
 
-        .icon {
-            width: 128px;
-            height: 128px;
-            margin-bottom: 24px;
-        }
+      .icon {
+        width: 128px;
+        height: 128px;
+        margin-bottom: 24px;
+      }
 
-        h1 {
-            font-size: 48px;
-            font-weight: 700;
-            margin-bottom: 8px;
-        }
+      h1 {
+        font-size: 48px;
+        font-weight: 700;
+        margin-bottom: 8px;
+      }
 
-        .tagline {
-            font-size: 20px;
-            color: #8b949e;
-            margin-bottom: 32px;
-        }
+      .tagline {
+        font-size: 20px;
+        color: #666;
+        margin-bottom: 32px;
+      }
 
-        .description {
-            font-size: 16px;
-            line-height: 1.6;
-            color: #8b949e;
-            margin-bottom: 40px;
-        }
+      .description {
+        font-size: 16px;
+        line-height: 1.6;
+        color: #666;
+        margin-bottom: 40px;
+      }
 
-        .download-btn {
-            display: inline-block;
-            background: #238636;
-            color: white;
-            padding: 16px 32px;
-            font-size: 18px;
-            font-weight: 600;
-            text-decoration: none;
-            border-radius: 8px;
-            transition: background 0.2s;
-            margin-bottom: 12px;
-        }
+      .download-btn {
+        display: inline-block;
+        background: #238636;
+        color: white;
+        padding: 16px 32px;
+        font-size: 18px;
+        font-weight: 600;
+        text-decoration: none;
+        border-radius: 8px;
+        transition: background 0.2s;
+        margin-bottom: 12px;
+      }
 
-        .download-btn:hover {
-            background: #2ea043;
-        }
+      .download-btn:hover {
+        background: #2ea043;
+      }
 
-        .download-note {
-            font-size: 14px;
-            color: #8b949e;
-            margin-bottom: 48px;
-        }
+      .download-btn:visited {
+        color: white;
+      }
 
-        .features {
-            text-align: left;
-            margin-bottom: 48px;
-        }
+      .download-note {
+        font-size: 14px;
+        color: #666;
+        margin-bottom: 48px;
+      }
 
-        .features h2 {
-            font-size: 18px;
-            margin-bottom: 16px;
-            color: #e6edf3;
-        }
+      .features {
+        text-align: left;
+        margin-bottom: 48px;
+      }
 
-        .features ul {
-            list-style: none;
-        }
+      .features h2 {
+        font-size: 18px;
+        margin-bottom: 16px;
+        color: #1a1a1a;
+      }
 
-        .features li {
-            padding: 8px 0;
-            color: #8b949e;
-            border-bottom: 1px solid #21262d;
-        }
+      .features ul {
+        list-style: none;
+      }
 
-        .features li:last-child {
-            border-bottom: none;
-        }
+      .features li {
+        padding: 8px 0;
+        color: #666;
+        border-bottom: 1px solid #e1e1e1;
+      }
 
-        .features strong {
-            color: #e6edf3;
-        }
+      .features li:last-child {
+        border-bottom: none;
+      }
 
-        .shortcuts {
-            text-align: left;
-            margin-bottom: 48px;
-        }
+      .features strong {
+        color: #1a1a1a;
+      }
 
-        .shortcuts h2 {
-            font-size: 18px;
-            margin-bottom: 16px;
-        }
+      .shortcuts {
+        text-align: left;
+        margin-bottom: 48px;
+      }
 
-        .shortcuts table {
-            width: 100%;
-            border-collapse: collapse;
-        }
+      .shortcuts h2 {
+        font-size: 18px;
+        margin-bottom: 16px;
+      }
 
-        .shortcuts td {
-            padding: 8px 0;
-            border-bottom: 1px solid #21262d;
-        }
+      .shortcuts table {
+        width: 100%;
+        border-collapse: collapse;
+      }
 
-        .shortcuts td:first-child {
-            color: #e6edf3;
-            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
-        }
+      .shortcuts td {
+        padding: 8px 0;
+        border-bottom: 1px solid #e1e1e1;
+      }
 
-        .shortcuts td:last-child {
-            color: #8b949e;
-            text-align: right;
-        }
+      .shortcuts td:first-child {
+        color: #1a1a1a;
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      }
 
-        .footer {
-            margin-top: auto;
-            padding-top: 48px;
-            color: #8b949e;
-            font-size: 14px;
-        }
+      .shortcuts td:last-child {
+        color: #666;
+        text-align: right;
+      }
 
-        .footer a {
-            color: #58a6ff;
-            text-decoration: none;
-        }
+      .footer {
+        margin-top: auto;
+        padding-top: 48px;
+        color: #666;
+        font-size: 14px;
+      }
 
-        .footer a:hover {
-            text-decoration: underline;
-        }
+      a {
+        color: #0969da;
+        text-decoration: none;
+      }
+
+      a:visited {
+        color: #0969da;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <div class="container">
-        <img src="https://raw.githubusercontent.com/nooga/cbzt/main/resources/icon.png" alt="CBZetto" class="icon">
-        <h1>CBZetto</h1>
-        <p class="tagline">Like Alacritty, but for CBZ files.</p>
-        <p class="description">
-            A stupid-fast, minimal CBZ reader for macOS.<br>
-            Written in Zig. Powered by Raylib. Built out of spite.
-        </p>
+      <img
+        src="https://raw.githubusercontent.com/nooga/cbzetto/main/resources/icon.png"
+        alt="CBZetto"
+        class="icon"
+      />
+      <h1>CBZetto</h1>
+      <p class="tagline">Like Alacritty, but for CBZ files.</p>
+      <p class="description">
+        A stupid-fast, minimal CBZ reader for macOS.<br />
+        Written in Zig. Powered by Raylib. Built out of spite.
+      </p>
 
-        <a href="https://github.com/nooga/cbzt/releases/latest" class="download-btn">
-            Download for macOS
-        </a>
-        <p class="download-note">
-            Requires macOS 10.12+<br>
-            <a href="https://github.com/nooga/cbzt/releases">View all releases</a>
-        </p>
+      <a
+        id="download-link"
+        href="https://github.com/nooga/cbzetto/releases/download/v0.3.0/CBZetto-v0.3.0.dmg"
+        class="download-btn"
+      >
+        Download for macOS
+      </a>
+      <p class="download-note">
+        Requires macOS 10.12+<br />
+        <a href="https://github.com/nooga/cbzetto/releases"
+          >View all releases</a
+        >
+      </p>
 
-        <div class="features">
-            <h2>Features</h2>
-            <ul>
-                <li><strong>GPU-accelerated</strong> — Smooth 60fps scrolling, always</li>
-                <li><strong>Background threaded</strong> — Images load while you scroll</li>
-                <li><strong>Smart memory</strong> — Lazy loading keeps RAM under ~200MB</li>
-                <li><strong>Instant wake</strong> — Zero input lag, even from idle</li>
-                <li><strong>Native trackpad</strong> — Pinch-to-zoom via macOS gestures</li>
-                <li><strong>State persistence</strong> — Remembers your position per-file</li>
-            </ul>
-        </div>
+      <div class="features">
+        <h2>Features</h2>
+        <ul>
+          <li>
+            <strong>GPU-accelerated</strong> — Smooth 60fps scrolling, always
+          </li>
+          <li>
+            <strong>Background threaded</strong> — Images load while you scroll
+          </li>
+          <li>
+            <strong>Smart memory</strong> — Lazy loading keeps RAM under ~200MB
+          </li>
+          <li>
+            <strong>Instant wake</strong> — Zero input lag, even from idle
+          </li>
+          <li>
+            <strong>Native trackpad</strong> — Pinch-to-zoom via macOS gestures
+          </li>
+          <li>
+            <strong>State persistence</strong> — Remembers your position
+            per-file
+          </li>
+        </ul>
+      </div>
 
-        <div class="shortcuts">
-            <h2>Keyboard Shortcuts</h2>
-            <table>
-                <tr><td>↑ ↓</td><td>Scroll</td></tr>
-                <tr><td>Page Up/Down</td><td>Jump pages</td></tr>
-                <tr><td>Home / End</td><td>First/last page</td></tr>
-                <tr><td>+ - 0</td><td>Zoom in/out/reset</td></tr>
-                <tr><td>⌘O</td><td>Open file</td></tr>
-                <tr><td>B</td><td>Toggle background</td></tr>
-                <tr><td>H / F1 / ?</td><td>Help</td></tr>
-                <tr><td>Esc / Q</td><td>Quit</td></tr>
-            </table>
-        </div>
+      <div class="shortcuts">
+        <h2>Keyboard Shortcuts</h2>
+        <table>
+          <tr>
+            <td>↑ ↓</td>
+            <td>Scroll</td>
+          </tr>
+          <tr>
+            <td>Page Up/Down</td>
+            <td>Jump pages</td>
+          </tr>
+          <tr>
+            <td>Home / End</td>
+            <td>First/last page</td>
+          </tr>
+          <tr>
+            <td>+ - 0</td>
+            <td>Zoom in/out/reset</td>
+          </tr>
+          <tr>
+            <td>⌘O</td>
+            <td>Open file</td>
+          </tr>
+          <tr>
+            <td>B</td>
+            <td>Toggle background</td>
+          </tr>
+          <tr>
+            <td>H / F1 / ?</td>
+            <td>Help</td>
+          </tr>
+          <tr>
+            <td>Esc / Q</td>
+            <td>Quit</td>
+          </tr>
+        </table>
+      </div>
     </div>
 
     <div class="footer">
-        <a href="https://github.com/nooga/cbzt">View on GitHub</a> · MIT License
+      <a href="https://github.com/nooga/cbzetto">View on GitHub</a> · MIT
+      License
     </div>
-</body>
+  </body>
 </html>
