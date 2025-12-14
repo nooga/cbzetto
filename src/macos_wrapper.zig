@@ -21,11 +21,30 @@ var should_open_file: bool = false;
 // Target object for handling menu actions
 var menu_target: ?*anyopaque = null;
 
+// Magnification gesture state
+var magnification_delta: f32 = 0.0;
+var gesture_target: ?*anyopaque = null;
+
 // Simple callback function for "Open..." menu item
 export fn openFileCallback(self: ?*anyopaque, selector: objc.SEL) void {
     _ = self;
     _ = selector;
     should_open_file = true;
+}
+
+// Callback for magnification gesture recognizer
+export fn magnifyCallback(self: ?*anyopaque, selector: objc.SEL, gesture: ?*anyopaque) void {
+    _ = self;
+    _ = selector;
+    if (gesture == null) return;
+
+    // Get the magnification value from the gesture
+    const magnificationSelector = objc.sel_registerName("magnification");
+    const magnificationMsg = @as(*const fn (?*anyopaque, objc.SEL) callconv(.C) f64, @ptrCast(&objc.objc_msgSend));
+    const magnification = magnificationMsg(gesture, magnificationSelector);
+
+    // Accumulate the delta (will be consumed by getMagnificationDelta)
+    magnification_delta += @as(f32, @floatCast(magnification));
 }
 
 // Helper function to convert C string to NSString
@@ -258,4 +277,61 @@ pub fn initializeMacOSFeatures() void {
     const activateSelector = objc.sel_registerName("activateIgnoringOtherApps:");
     const activateMsg = @as(*const fn (?*anyopaque, objc.SEL, bool) callconv(.C) void, @ptrCast(&objc.objc_msgSend));
     activateMsg(sharedApplication, activateSelector, true);
+}
+
+// Set up magnification gesture recognizer on an NSWindow
+// nsWindow should be the native window handle from glfwGetCocoaWindow
+pub fn setupMagnificationGesture(nsWindow: ?*anyopaque) void {
+    if (nsWindow == null) return;
+
+    // Get the content view
+    const contentViewSelector = objc.sel_registerName("contentView");
+    const contentViewMsg = @as(*const fn (?*anyopaque, objc.SEL) callconv(.C) ?*anyopaque, @ptrCast(&objc.objc_msgSend));
+    const contentView = contentViewMsg(nsWindow, contentViewSelector);
+    if (contentView == null) return;
+
+    // Create gesture target object if not already created
+    if (gesture_target == null) {
+        const NSObject = objc.objc_getClass("NSObject");
+        const allocSelector = objc.sel_registerName("alloc");
+        const initSelector = objc.sel_registerName("init");
+        const allocMsg = @as(*const fn (?*anyopaque, objc.SEL) callconv(.C) ?*anyopaque, @ptrCast(&objc.objc_msgSend));
+        const initMsg = @as(*const fn (?*anyopaque, objc.SEL) callconv(.C) ?*anyopaque, @ptrCast(&objc.objc_msgSend));
+
+        const targetAlloc = allocMsg(NSObject, allocSelector);
+        gesture_target = initMsg(targetAlloc, initSelector);
+
+        // Add the handleMagnify: method to our target object
+        const targetClass = object_getClass(gesture_target);
+        const handleMagnifyAction = objc.sel_registerName("handleMagnify:");
+        _ = class_addMethod(targetClass, handleMagnifyAction, @constCast(@ptrCast(&magnifyCallback)), "v@:@");
+    }
+
+    // Create NSMagnificationGestureRecognizer
+    const NSMagnificationGestureRecognizer = objc.objc_getClass("NSMagnificationGestureRecognizer");
+    if (NSMagnificationGestureRecognizer == null) return;
+
+    const allocSelector = objc.sel_registerName("alloc");
+    const initWithTargetSelector = objc.sel_registerName("initWithTarget:action:");
+    const allocMsg = @as(*const fn (?*anyopaque, objc.SEL) callconv(.C) ?*anyopaque, @ptrCast(&objc.objc_msgSend));
+    const initWithTargetMsg = @as(*const fn (?*anyopaque, objc.SEL, ?*anyopaque, objc.SEL) callconv(.C) ?*anyopaque, @ptrCast(&objc.objc_msgSend));
+
+    const gestureAlloc = allocMsg(NSMagnificationGestureRecognizer, allocSelector);
+    const handleMagnifyAction = objc.sel_registerName("handleMagnify:");
+    const gestureRecognizer = initWithTargetMsg(gestureAlloc, initWithTargetSelector, gesture_target, handleMagnifyAction);
+
+    if (gestureRecognizer == null) return;
+
+    // Add gesture recognizer to content view
+    const addGestureRecognizerSelector = objc.sel_registerName("addGestureRecognizer:");
+    const addGestureRecognizerMsg = @as(*const fn (?*anyopaque, objc.SEL, ?*anyopaque) callconv(.C) void, @ptrCast(&objc.objc_msgSend));
+    addGestureRecognizerMsg(contentView, addGestureRecognizerSelector, gestureRecognizer);
+}
+
+// Get and reset the accumulated magnification delta
+// Returns the delta since last call (positive = zoom in, negative = zoom out)
+pub fn getMagnificationDelta() f32 {
+    const delta = magnification_delta;
+    magnification_delta = 0.0;
+    return delta;
 }

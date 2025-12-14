@@ -107,8 +107,8 @@ fn updateDynamicFPS() void {
         }
     }
 
-    // Check if we should raise to active FPS
-    if (activity_detected and current_fps != active_fps and time_since_fps_change > fps_change_cooldown) {
+    // Check if we should raise to active FPS - NO cooldown for ramp-up to ensure instant response
+    if (activity_detected and current_fps != active_fps) {
         current_fps = active_fps;
         rl.SetTargetFPS(current_fps);
         last_fps_change = current_time;
@@ -127,12 +127,6 @@ fn detectInputActivity() void {
 
     // Check for window resize
     if (rl.IsWindowResized()) {
-        markActivity();
-        return;
-    }
-
-    // Check for gesture activity
-    if (rl.IsGestureDetected(rl.GESTURE_PINCH_IN) or rl.IsGestureDetected(rl.GESTURE_PINCH_OUT)) {
         markActivity();
         return;
     }
@@ -503,8 +497,9 @@ pub fn main() !void {
     // Initialize macOS-specific features (icon, menu bar, etc.)
     macos_wrapper.initializeMacOSFeatures();
 
-    // Enable gesture detection for pinch-to-zoom
-    rl.SetGesturesEnabled(rl.GESTURE_PINCH_IN | rl.GESTURE_PINCH_OUT);
+    // Set up native macOS magnification gesture for trackpad pinch-to-zoom
+    const nsWindow = embedded_font.getCocoaWindow();
+    macos_wrapper.setupMagnificationGesture(nsWindow);
 
     // Register signal handlers for graceful shutdown
     const sigaction = posix.Sigaction{
@@ -1084,13 +1079,11 @@ fn handleInput() void {
         zoom_level = 1.0;
     }
 
-    // Pinch gesture zoom (macOS trackpad) - experimental
-    if (rl.IsGestureDetected(rl.GESTURE_PINCH_IN)) {
-        zoom_level = std.math.clamp(zoom_level - 0.05, min_zoom, max_zoom);
-    }
-
-    if (rl.IsGestureDetected(rl.GESTURE_PINCH_OUT)) {
-        zoom_level = std.math.clamp(zoom_level + 0.05, min_zoom, max_zoom);
+    // Native macOS trackpad pinch-to-zoom
+    const magnification = macos_wrapper.getMagnificationDelta();
+    if (magnification != 0.0) {
+        zoom_level = std.math.clamp(zoom_level + magnification, min_zoom, max_zoom);
+        markActivity();
     }
 
     const max_scroll = @max(0.0, total_height - screen_height);
