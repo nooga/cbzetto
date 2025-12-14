@@ -9,7 +9,7 @@ A stupid-fast, minimal CBZ reader for macOS — written in Zig and powered by Ra
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.13.0-orange.svg)](https://ziglang.org/)
-[![macOS](https://img.shields.io/badge/macOS-14+_Apple_Sillicon-black.svg)](https://www.apple.com/macos/)
+[![macOS](https://img.shields.io/badge/macOS-14+_Apple_Silicon-black.svg)](https://www.apple.com/macos/)
 
 </div>
 
@@ -85,12 +85,32 @@ The `build_release.sh` script creates a proper macOS app bundle with:
 
 Or, `zig build run` to run the app directly from source.
 
-**Key design decisions:**
+## How it works (high level)
 
-- **Raylib** for cross-platform OpenGL without the pain
-- **Zig's GeneralPurposeAllocator** for predictable memory
-- **Native Obj-C runtime calls** for macOS integration (no bridging headers)
-- **Dynamic FPS** — 60fps active, 10fps idle, instant wake on input
+The whole app is basically “one tall scroll surface” made of page textures, with aggressive lazy loading.
+
+- **Scan + index CBZ(s)** (`src/main.zig`: `loadPath`, `loadFolder`, `loadCBZ`)
+  - Opens the `.cbz` as a ZIP, collects image entry names (`.jpg/.jpeg/.png`), sorts them, and stores _only_ the filenames initially.
+  - Keeps the ZIP file handle open so pages can be extracted on demand.
+- **Layout is based on known (or guessed) page sizes** (`src/main.zig`: `updateCumulative`)
+  - Each page has a “display height” computed from the window width and the page’s aspect ratio.
+  - Until an image is decoded, pages start with default dimensions and get corrected once the real size is known.
+- **Rendering is just a loop that draws each loaded texture** (`src/main.zig`: `renderPages`)
+  - Pages are drawn top-to-bottom at their accumulated Y offsets using `DrawTexturePro`.
+  - Scrolling/zooming is just `Camera2D` target/zoom changes (`updateCamera`).
+- **Lazy loading is driven by the current scroll position** (`src/main.zig`: `updateLazyLoading`)
+  - Computes the visible page range (plus a small buffer), requests loads for nearby pages, and unloads textures far outside the buffer to cap GPU memory.
+  - There’s also a small synchronous “visible pages” fallback if background work lags.
+- **Background decoding happens off-thread** (`src/image_loader.zig`)
+  - A worker thread pulls prioritized requests, extracts image bytes from the ZIP, decodes them via raylib, and returns raw pixel buffers.
+  - The main thread converts those pixels into GPU textures (`src/main.zig`: `processBackgroundResults`) because GPU uploads must happen on the render thread.
+  - Note: the loader contains logic for downsampling and “extra-tall image slicing”; the current renderer stores **one** texture per page, so slicing is currently more “future work” than a complete feature.
+- **State persistence** (`src/main.zig`: `saveState`, `loadState`)
+  - Writes `.cbzviewer_state.json` into the opened folder (page number + in-page progress + zoom + window geometry + background color).
+  - Saved on idle (dynamic FPS drop), on exit, and on SIGINT/SIGTERM.
+- **macOS glue** (`src/macos_wrapper.zig`)
+  - Uses the Obj‑C runtime to show an `NSOpenPanel`, add a basic menu bar (“Open…”), and install a native pinch recognizer.
+  - Pinch deltas are accumulated in the wrapper and consumed once per frame (`consumeMagnifyDelta`) in `handleInput`.
 
 ## Dependencies
 
